@@ -1,0 +1,146 @@
+function actualizarOrdenesRetenidas() {
+  const hojaDatos = 'OrdenesRetenidas';
+  const hojaLogs = 'LogsCambios';
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+
+  // Crear hojas si no existen
+  let sheetDatos = spreadsheet.getSheetByName(hojaDatos);
+  if (!sheetDatos) sheetDatos = spreadsheet.insertSheet(hojaDatos);
+  
+  let sheetLogs = spreadsheet.getSheetByName(hojaLogs);
+  if (!sheetLogs) sheetLogs = spreadsheet.insertSheet(hojaLogs);
+
+  // 👉 Siempre establecer encabezados en fila 1
+  sheetDatos.getRange(1, 1, 1, 7).setValues([[
+    'OrderNum',
+    'Fecha',
+    'Zona',
+    'Cliente',
+    'Estado',
+    'Motivo Retención',
+    'Observaciones Retención'
+  ]]);
+
+  // Si hoja de logs no tiene encabezados, agregarlos
+  if (sheetLogs.getLastRow() === 0) {
+    sheetLogs.appendRow(['Fecha Cambio', 'OrderNum', 'Cliente', 'Estado Anterior', 'Nuevo Estado']);
+  }
+
+  // Conexión SQL
+  const url = 'jdbc:sqlserver://35.243.175.82:1433;databaseName=EpicorRepTran';
+  const user = 'udlxls';
+  const password = '#kYe-343';
+  const conn = Jdbc.getConnection(url, user, password);
+
+  const query = `
+    SELECT 
+      OrderHed_OrderNum, 
+      Customer_Name, 
+      OrderHed_OrderDate, 
+      Zona,
+      CreditoRetenido,
+      RetencionComercial,
+      ObservacionesRetencionCredito
+    FROM [EpicorRepTran].[dbo].[udvPortalCustDtlOV]
+    WHERE CreditoRetenido = 1 AND OrderHed_VoidOrder = 0 AND Zona != 'Comercial Agrosoil'
+  `;
+
+  const stmt = conn.createStatement();
+  const results = stmt.executeQuery(query);
+
+  // Obtener datos nuevos
+  const nuevasOrdenes = [];
+  while (results.next()) {
+    const orderNum = results.getString('OrderHed_OrderNum');
+    const cliente = (results.getString('Customer_Name') || '').toUpperCase();
+
+    // ✅ Fecha usando getString y conversión segura
+    let fecha = '';
+    try {
+      const rawFechaStr = results.getString('OrderHed_OrderDate');
+      if (rawFechaStr) {
+        const rawFecha = new Date(rawFechaStr);
+        if (rawFecha instanceof Date && !isNaN(rawFecha)) {
+          fecha = Utilities.formatDate(rawFecha, "GMT-5", "dd/MM/yyyy");
+        }
+      }
+    } catch (e) {
+      fecha = '';
+    }
+
+    const estado = 'RETENIDA';
+    const zona = results.getString('Zona');
+    const cartera = results.getInt('CreditoRetenido') === 1;
+    const comercial = results.getInt('RetencionComercial') === 1;
+    const observaciones = (results.getString('ObservacionesRetencionCredito') || '').toUpperCase();
+
+    let motivo = '';
+    if (cartera && comercial) {
+      motivo = 'COMERCIAL Y CARTERA';
+    } else if (cartera) {
+      motivo = 'CARTERA';
+    } else if (comercial) {
+      motivo = 'COMERCIAL';
+    } else {
+      motivo = 'N/A';
+    }
+
+    nuevasOrdenes.push([orderNum, fecha, zona, cliente, estado, motivo, observaciones]);
+  }
+
+  // Leer datos anteriores
+  const ultimaFila = sheetDatos.getLastRow();
+  const datosAnteriores = ultimaFila > 1 
+    ? sheetDatos.getRange(2, 1, ultimaFila - 1, 7).getValues()
+    : [];
+
+  // Convertir a mapa para comparación
+  const anterioresMap = new Map(datosAnteriores.map(row => [row[0], row]));
+
+  // Limpiar hoja y actualizar
+  if (ultimaFila > 1) {
+    sheetDatos.getRange(2, 1, ultimaFila - 1, 7).clearContent();
+  }
+
+  if (nuevasOrdenes.length > 0) {
+    sheetDatos.getRange(2, 1, nuevasOrdenes.length, 7).setValues(nuevasOrdenes);
+  }
+
+  // Hora actual como Date real
+  const ahora = new Date();
+
+  // Detectar liberaciones y registrar en Logs
+  datosAnteriores.forEach(row => {
+    const orderNum = row[0];
+    if (!nuevasOrdenes.find(n => n[0] == orderNum)) {
+      const filaLog = sheetLogs.getLastRow() + 1;
+      const cliente = (row[3] || '').toUpperCase();
+      const estadoAnterior = (row[4] || '').toUpperCase(); // "RETENIDA"
+      const motivo = (row[5] || '').toUpperCase(); // Ej: "CARTERA"
+      const nuevoEstado = motivo ? `LIBERADA - ${motivo}` : 'LIBERADA';
+
+      sheetLogs.getRange(filaLog, 1, 1, 5).setValues([[
+        ahora,
+        orderNum,
+        cliente,
+        estadoAnterior,
+        nuevoEstado
+      ]]);
+      sheetLogs.getRange(filaLog, 1).setNumberFormat('dd/MM/yyyy hh:mm AM/PM');
+    }
+  });
+
+  // Congelar la primera fila
+  sheetDatos.setFrozenRows(1);
+  sheetLogs.setFrozenRows(1);
+
+  stmt.close(); 
+  conn.close();
+}
+
+function crearTriggerCadaHora() {
+  ScriptApp.newTrigger("actualizarOrdenesRetenidas")
+    .timeBased()
+    .everyHours(1)
+    .create();
+}
