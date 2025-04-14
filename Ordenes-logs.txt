@@ -1,6 +1,7 @@
 function actualizarOrdenesCredito() {
   const hojaOrdenes = "OrdenesRetenidas";
   const hojaLogs = "LogsLiberaciones";
+  const hojaEncuesta = "EncuestaOrdenes";
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
   // Crear hojas si no existen
@@ -11,6 +12,16 @@ function actualizarOrdenesCredito() {
   let sheetLogs = ss.getSheetByName(hojaLogs);
   if (!sheetLogs) sheetLogs = ss.insertSheet(hojaLogs);
   else sheetLogs.clear();
+
+  let sheetEncuesta = ss.getSheetByName(hojaEncuesta);
+  if (!sheetEncuesta) {
+    sheetEncuesta = ss.insertSheet(hojaEncuesta);
+    sheetEncuesta.appendRow(["N° en lista", "Número de Orden", "Fecha y hora del registro"]);
+    const protection = sheetEncuesta.protect();
+    protection.setDescription("Protección encuesta de órdenes liberadas");
+    protection.removeEditors(protection.getEditors());
+    if (protection.canDomainEdit()) protection.setDomainEdit(false);
+  }
 
   // Encabezados
   const encabezadoOrdenes = [
@@ -23,14 +34,12 @@ function actualizarOrdenesCredito() {
   sheetOrdenes.getRange(1, 1, 1, encabezadoOrdenes.length).setValues([encabezadoOrdenes]);
   sheetLogs.getRange(1, 1, 1, encabezadoLogs.length).setValues([encabezadoLogs]);
 
-  // Conexión a SQL Server
   const conn = Jdbc.getConnection(
     "jdbc:sqlserver://35.243.175.82:1433;databaseName=EpicorRepTran",
     "udlxls",
     "#kYe-343"
   );
 
-  // Consulta órdenes retenidas
   const queryRetenidas = `
     SELECT 
       d.OrderHed_OrderNum,
@@ -49,7 +58,6 @@ function actualizarOrdenesCredito() {
       AND (o.CreditOverride IS NULL OR o.CreditOverride = 0)
   `;
 
-  // Consulta órdenes liberadas en los últimos 7 días
   const queryLiberadas = `
     SELECT 
       d.OrderHed_OrderNum,
@@ -72,7 +80,6 @@ function actualizarOrdenesCredito() {
       AND o.CreditOverrideDate >= DATEADD(DAY, -7, GETDATE())
   `;
 
-  // Ejecutar consulta de órdenes retenidas
   const stmt1 = conn.createStatement();
   const results1 = stmt1.executeQuery(queryRetenidas);
   const data1 = [];
@@ -91,7 +98,7 @@ function actualizarOrdenesCredito() {
       fechaOrden = "";
     }
 
-    const observacion = (results1.getString("ObservacionesRetencionCredito") || "Sin observaciones registradas").toUpperCase();
+    const observacion = (results1.getString("ObservacionesRetencionCredito") || "SIN OBSERVACIONES REGISTRADAS").toUpperCase();
 
     data1.push([
       results1.getString("OrderHed_OrderNum"),
@@ -116,7 +123,6 @@ function actualizarOrdenesCredito() {
     }
   }
 
-  // Ejecutar consulta de órdenes liberadas
   const stmt2 = conn.createStatement();
   const results2 = stmt2.executeQuery(queryLiberadas);
   const data2 = [];
@@ -135,7 +141,7 @@ function actualizarOrdenesCredito() {
       fechaLiberacion = "";
     }
 
-    const observacion = (results2.getString("ObservacionesRetencionCredito") || "Sin observaciones registradas").toUpperCase();
+    const observacion = (results2.getString("ObservacionesRetencionCredito") || "SIN OBSERVACIONES REGISTRADAS").toUpperCase();
 
     data2.push([
       results2.getString("OrderHed_OrderNum"),
@@ -151,7 +157,6 @@ function actualizarOrdenesCredito() {
   }
 
   if (data2.length > 0) {
-    // Ordenar por fecha de liberación descendente
     data2.sort((a, b) => {
       const fechaA = new Date(a[3].split("/").reverse().join("-"));
       const fechaB = new Date(b[3].split("/").reverse().join("-"));
@@ -169,7 +174,40 @@ function actualizarOrdenesCredito() {
     }
   }
 
-  // Cierre
+  // 🧹 Limpiar EncuestaOrdenes
+  const ultimaFilaEncuesta = sheetEncuesta.getLastRow();
+  if (ultimaFilaEncuesta > 1) {
+    sheetEncuesta.getRange(2, 1, ultimaFilaEncuesta - 1, 3).clearContent();
+  }
+
+  // ✅ Registrar solo órdenes liberadas cada 100
+  const totalLiberadas = data2.length;
+  const registrosEncuesta = [];
+
+  for (let i = 99; i < totalLiberadas; i += 100) {
+    const ordenNum = data2[i][0];
+    const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy HH:mm:ss");
+    const consecutivo = i + 1;
+    registrosEncuesta.push([consecutivo, ordenNum, timestamp]);
+  }
+
+  if (registrosEncuesta.length > 0) {
+    sheetEncuesta.getRange(2, 1, registrosEncuesta.length, 3).setValues(registrosEncuesta);
+  }
+
+  // 🧼 Limitar filas y columnas en EncuestaOrdenes
+  const totalFilasEncuesta = sheetEncuesta.getMaxRows();
+  const totalColumnasEncuesta = sheetEncuesta.getMaxColumns();
+
+  if (totalFilasEncuesta > registrosEncuesta.length + 1) {
+    sheetEncuesta.deleteRows(registrosEncuesta.length + 2, totalFilasEncuesta - registrosEncuesta.length - 1);
+  }
+
+  if (totalColumnasEncuesta > 3) {
+    sheetEncuesta.deleteColumns(4, totalColumnasEncuesta - 3);
+  }
+
+  // 🔚 Cierre de conexiones
   stmt1.close();
   stmt2.close();
   conn.close();
