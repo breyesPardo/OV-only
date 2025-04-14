@@ -91,6 +91,8 @@ function actualizarOrdenesCredito() {
       fechaOrden = "";
     }
 
+    const observacion = (results1.getString("ObservacionesRetencionCredito") || "Sin observaciones registradas").toUpperCase();
+
     data1.push([
       results1.getString("OrderHed_OrderNum"),
       fechaOrden,
@@ -98,7 +100,7 @@ function actualizarOrdenesCredito() {
       results1.getString("Customer_Name"),
       "RETENIDA",
       "CRÉDITO",
-      results1.getString("ObservacionesRetencionCredito")
+      observacion
     ]);
   }
 
@@ -133,6 +135,8 @@ function actualizarOrdenesCredito() {
       fechaLiberacion = "";
     }
 
+    const observacion = (results2.getString("ObservacionesRetencionCredito") || "Sin observaciones registradas").toUpperCase();
+
     data2.push([
       results2.getString("OrderHed_OrderNum"),
       results2.getString("Zona"),
@@ -141,12 +145,19 @@ function actualizarOrdenesCredito() {
       results2.getString("CreditOverrideTime"),
       results2.getString("CreditOverrideUserID"),
       results2.getString("NombreUsuario"),
-      results2.getString("ObservacionesRetencionCredito"),
+      observacion,
       "LIBERADA"
     ]);
   }
 
   if (data2.length > 0) {
+    // Ordenar por fecha de liberación descendente
+    data2.sort((a, b) => {
+      const fechaA = new Date(a[3].split("/").reverse().join("-"));
+      const fechaB = new Date(b[3].split("/").reverse().join("-"));
+      return fechaB - fechaA;
+    });
+
     sheetLogs.getRange(2, 1, data2.length, encabezadoLogs.length).setValues(data2);
     const totalFilas = sheetLogs.getMaxRows();
     if (totalFilas > data2.length + 1) {
