@@ -12,15 +12,16 @@ function actualizarOrdenesCredito() {
   if (!sheetLogs) sheetLogs = ss.insertSheet(hojaLogs);
   else sheetLogs.clear();
 
-  // Encabezados para hoja OrdenesRetenidas
-  sheetOrdenes.getRange(1, 1, 1, 7).setValues([[
+  // Encabezados
+  const encabezadoOrdenes = [
     "OrderNum", "Fecha", "Zona", "Cliente", "Estado", "Motivo Retención", "Observaciones Retención"
-  ]]);
+  ];
+  const encabezadoLogs = [
+    "OrderNum", "Zona", "Cliente", "Fecha Liberación", "Hora Liberación", "UsuarioID", "Nombre Usuario", "Observaciones", "Estado"
+  ];
 
-  // Encabezados para hoja LogsLiberaciones
-  sheetLogs.getRange(1, 1, 1, 8).setValues([[
-    "OrderNum", "Zona", "Cliente", "Fecha Liberación", "Hora Liberación", "UsuarioID", "Nombre Usuario", "Observaciones"
-  ]]);
+  sheetOrdenes.getRange(1, 1, 1, encabezadoOrdenes.length).setValues([encabezadoOrdenes]);
+  sheetLogs.getRange(1, 1, 1, encabezadoLogs.length).setValues([encabezadoLogs]);
 
   // Conexión a SQL Server
   const conn = Jdbc.getConnection(
@@ -29,7 +30,7 @@ function actualizarOrdenesCredito() {
     "#kYe-343"
   );
 
-  // Consulta de órdenes retenidas no liberadas
+  // Consulta órdenes retenidas
   const queryRetenidas = `
     SELECT 
       d.OrderHed_OrderNum,
@@ -48,7 +49,7 @@ function actualizarOrdenesCredito() {
       AND (o.CreditOverride IS NULL OR o.CreditOverride = 0)
   `;
 
-  // Consulta de órdenes ya liberadas
+  // Consulta órdenes liberadas en los últimos 7 días
   const queryLiberadas = `
     SELECT 
       d.OrderHed_OrderNum,
@@ -63,13 +64,15 @@ function actualizarOrdenesCredito() {
     JOIN Erp.OrderHed o ON d.OrderHed_OrderNum = o.OrderNum
     LEFT JOIN Ice.SysUserFile u ON o.CreditOverrideUserID = u.UserID
     WHERE 
-      d.CreditoRetenido = 1 
-      AND d.OrderHed_VoidOrder = 0 
+      d.CreditoRetenido = 0
+      AND d.OrderHed_VoidOrder = 0
       AND d.Zona != 'Comercial Agrosoil'
       AND o.CreditOverride = 1
+      AND o.CreditOverrideDate IS NOT NULL
+      AND o.CreditOverrideDate >= DATEADD(DAY, -7, GETDATE())
   `;
 
-  // Cargar resultados de órdenes retenidas
+  // Ejecutar consulta de órdenes retenidas
   const stmt1 = conn.createStatement();
   const results1 = stmt1.executeQuery(queryRetenidas);
   const data1 = [];
@@ -80,7 +83,7 @@ function actualizarOrdenesCredito() {
       const fechaRaw = results1.getString("OrderHed_OrderDate");
       if (fechaRaw) {
         const fechaObj = new Date(fechaRaw);
-        if (fechaObj instanceof Date && !isNaN(fechaObj)) {
+        if (!isNaN(fechaObj)) {
           fechaOrden = Utilities.formatDate(fechaObj, Session.getScriptTimeZone(), "dd/MM/yyyy");
         }
       }
@@ -100,10 +103,18 @@ function actualizarOrdenesCredito() {
   }
 
   if (data1.length > 0) {
-    sheetOrdenes.getRange(2, 1, data1.length, 7).setValues(data1);
+    sheetOrdenes.getRange(2, 1, data1.length, encabezadoOrdenes.length).setValues(data1);
+    const totalFilas = sheetOrdenes.getMaxRows();
+    if (totalFilas > data1.length + 1) {
+      sheetOrdenes.deleteRows(data1.length + 2, totalFilas - data1.length - 1);
+    }
+    const totalColumnas = sheetOrdenes.getMaxColumns();
+    if (totalColumnas > encabezadoOrdenes.length) {
+      sheetOrdenes.deleteColumns(encabezadoOrdenes.length + 1, totalColumnas - encabezadoOrdenes.length);
+    }
   }
 
-  // Cargar resultados de logs de liberación
+  // Ejecutar consulta de órdenes liberadas
   const stmt2 = conn.createStatement();
   const results2 = stmt2.executeQuery(queryLiberadas);
   const data2 = [];
@@ -114,7 +125,7 @@ function actualizarOrdenesCredito() {
       const fechaRaw = results2.getString("CreditOverrideDate");
       if (fechaRaw) {
         const fechaObj = new Date(fechaRaw);
-        if (fechaObj instanceof Date && !isNaN(fechaObj)) {
+        if (!isNaN(fechaObj)) {
           fechaLiberacion = Utilities.formatDate(fechaObj, Session.getScriptTimeZone(), "dd/MM/yyyy");
         }
       }
@@ -130,13 +141,25 @@ function actualizarOrdenesCredito() {
       results2.getString("CreditOverrideTime"),
       results2.getString("CreditOverrideUserID"),
       results2.getString("NombreUsuario"),
-      results2.getString("ObservacionesRetencionCredito")
+      results2.getString("ObservacionesRetencionCredito"),
+      "LIBERADA"
     ]);
   }
 
   if (data2.length > 0) {
-    sheetLogs.getRange(2, 1, data2.length, 8).setValues(data2);
+    sheetLogs.getRange(2, 1, data2.length, encabezadoLogs.length).setValues(data2);
+    const totalFilas = sheetLogs.getMaxRows();
+    if (totalFilas > data2.length + 1) {
+      sheetLogs.deleteRows(data2.length + 2, totalFilas - data2.length - 1);
+    }
+    const totalColumnas = sheetLogs.getMaxColumns();
+    if (totalColumnas > encabezadoLogs.length) {
+      sheetLogs.deleteColumns(encabezadoLogs.length + 1, totalColumnas - encabezadoLogs.length);
+    }
   }
 
-  stmt1.close(); stmt2.close(); conn.close();
+  // Cierre
+  stmt1.close();
+  stmt2.close();
+  conn.close();
 }
