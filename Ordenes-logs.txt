@@ -4,7 +4,6 @@ function actualizarOrdenesCredito() {
   const hojaEncuesta = "EncuestaOrdenes";
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  // Crear hojas si no existen
   let sheetOrdenes = ss.getSheetByName(hojaOrdenes);
   if (!sheetOrdenes) sheetOrdenes = ss.insertSheet(hojaOrdenes);
   else sheetOrdenes.clear();
@@ -16,29 +15,19 @@ function actualizarOrdenesCredito() {
   let sheetEncuesta = ss.getSheetByName(hojaEncuesta);
   if (!sheetEncuesta) {
     sheetEncuesta = ss.insertSheet(hojaEncuesta);
-    sheetEncuesta.appendRow(["N° en lista", "Número de Orden", "Fecha y hora del registro"]);
-    const protection = sheetEncuesta.protect();
-    protection.setDescription("Protección encuesta de órdenes liberadas");
-    protection.removeEditors(protection.getEditors());
-    if (protection.canDomainEdit()) protection.setDomainEdit(false);
+  } else {
+    sheetEncuesta.clear();
   }
 
-  // Encabezados
-  const encabezadoOrdenes = [
-    "OrderNum", "Fecha", "Zona", "Cliente", "Estado", "Motivo Retención", "Observaciones Retención"
-  ];
-  const encabezadoLogs = [
-    "OrderNum", "Zona", "Cliente", "Fecha Liberación", "Hora Liberación", "UsuarioID", "Nombre Usuario", "Observaciones", "Estado"
-  ];
+  const encabezadoOrdenes = ["OrderNum", "Fecha", "Zona", "Cliente", "Estado", "Motivo Retención", "Observaciones Retención"];
+  const encabezadoLogs = ["OrderNum", "Zona", "Cliente", "Fecha Liberación", "Hora Liberación", "UsuarioID", "Nombre Usuario", "Observaciones", "Estado"];
+  const encabezadoEncuesta = ["N° en lista", "Número de Orden", "Fecha y hora del registro", "Cliente"];
 
   sheetOrdenes.getRange(1, 1, 1, encabezadoOrdenes.length).setValues([encabezadoOrdenes]);
   sheetLogs.getRange(1, 1, 1, encabezadoLogs.length).setValues([encabezadoLogs]);
+  sheetEncuesta.getRange(1, 1, 1, encabezadoEncuesta.length).setValues([encabezadoEncuesta]);
 
-  const conn = Jdbc.getConnection(
-    "jdbc:sqlserver://35.243.175.82:1433;databaseName=EpicorRepTran",
-    "udlxls",
-    "#kYe-343"
-  );
+  const conn = Jdbc.getConnection("jdbc:sqlserver://35.243.175.82:1433;databaseName=EpicorRepTran", "udlxls", "#kYe-343");
 
   const queryRetenidas = `
     SELECT 
@@ -50,12 +39,11 @@ function actualizarOrdenesCredito() {
       d.CreditoRetenido,
       d.ObservacionesRetencionCredito
     FROM EpicorRepTran.dbo.udvPortalCustDtlOV d
-    LEFT JOIN Erp.OrderHed o ON d.OrderHed_OrderNum = o.OrderNum
     WHERE 
-      d.CreditoRetenido = 1 
-      AND d.OrderHed_VoidOrder = 0 
+      d.CreditoRetenido = 1
+      AND d.OrderHed_VoidOrder = 0
       AND d.Zona != 'Comercial Agrosoil'
-      AND (o.CreditOverride IS NULL OR o.CreditOverride = 0)
+      AND (d.CreditOverride IS NULL OR d.CreditOverride = 0)
   `;
 
   const queryLiberadas = `
@@ -63,21 +51,24 @@ function actualizarOrdenesCredito() {
       d.OrderHed_OrderNum,
       d.Zona,
       d.Customer_Name,
-      o.CreditOverrideDate,
-      o.CreditOverrideTime,
-      o.CreditOverrideUserID,
-      u.Name AS NombreUsuario,
+      d.FechaLiberacionCredito,
+      d.HoraLiberacionCredito,
+      oh.CreditOverrideUserID,
+      u.Name,
       d.ObservacionesRetencionCredito
     FROM EpicorRepTran.dbo.udvPortalCustDtlOV d
-    JOIN Erp.OrderHed o ON d.OrderHed_OrderNum = o.OrderNum
-    LEFT JOIN Ice.SysUserFile u ON o.CreditOverrideUserID = u.UserID
+    JOIN EpicorRepTran.dbo.OrderHed oh 
+      ON d.OrderHed_OrderNum = oh.OrderNum AND d.OrderHed_Company = oh.Company
+    LEFT JOIN EpicorTrain10.dbo.UserFile u 
+      ON oh.CreditOverrideUserID = u.DcdUserID
     WHERE 
       d.CreditoRetenido = 0
       AND d.OrderHed_VoidOrder = 0
       AND d.Zona != 'Comercial Agrosoil'
-      AND o.CreditOverride = 1
-      AND o.CreditOverrideDate IS NOT NULL
-      AND o.CreditOverrideDate >= DATEADD(DAY, -7, GETDATE())
+      AND oh.CreditOverride = 1
+      AND d.FechaLiberacionCredito IS NOT NULL
+      AND d.FechaLiberacionCredito >= DATEADD(DAY, -7, GETDATE())
+    ORDER BY d.FechaLiberacionCredito DESC
   `;
 
   const stmt1 = conn.createStatement();
@@ -113,14 +104,6 @@ function actualizarOrdenesCredito() {
 
   if (data1.length > 0) {
     sheetOrdenes.getRange(2, 1, data1.length, encabezadoOrdenes.length).setValues(data1);
-    const totalFilas = sheetOrdenes.getMaxRows();
-    if (totalFilas > data1.length + 1) {
-      sheetOrdenes.deleteRows(data1.length + 2, totalFilas - data1.length - 1);
-    }
-    const totalColumnas = sheetOrdenes.getMaxColumns();
-    if (totalColumnas > encabezadoOrdenes.length) {
-      sheetOrdenes.deleteColumns(encabezadoOrdenes.length + 1, totalColumnas - encabezadoOrdenes.length);
-    }
   }
 
   const stmt2 = conn.createStatement();
@@ -130,7 +113,7 @@ function actualizarOrdenesCredito() {
   while (results2.next()) {
     let fechaLiberacion = "";
     try {
-      const fechaRaw = results2.getString("CreditOverrideDate");
+      const fechaRaw = results2.getString("FechaLiberacionCredito");
       if (fechaRaw) {
         const fechaObj = new Date(fechaRaw);
         if (!isNaN(fechaObj)) {
@@ -141,6 +124,7 @@ function actualizarOrdenesCredito() {
       fechaLiberacion = "";
     }
 
+    const hora = results2.getString("HoraLiberacionCredito") || "";
     const observacion = (results2.getString("ObservacionesRetencionCredito") || "SIN OBSERVACIONES REGISTRADAS").toUpperCase();
 
     data2.push([
@@ -148,66 +132,35 @@ function actualizarOrdenesCredito() {
       results2.getString("Zona"),
       results2.getString("Customer_Name"),
       fechaLiberacion,
-      results2.getString("CreditOverrideTime"),
-      results2.getString("CreditOverrideUserID"),
-      results2.getString("NombreUsuario"),
+      hora,
+      results2.getString("CreditOverrideUserID") || "",
+      results2.getString("Name") || "",
       observacion,
       "LIBERADA"
     ]);
   }
 
   if (data2.length > 0) {
-    data2.sort((a, b) => {
-      const fechaA = new Date(a[3].split("/").reverse().join("-"));
-      const fechaB = new Date(b[3].split("/").reverse().join("-"));
-      return fechaB - fechaA;
-    });
-
     sheetLogs.getRange(2, 1, data2.length, encabezadoLogs.length).setValues(data2);
-    const totalFilas = sheetLogs.getMaxRows();
-    if (totalFilas > data2.length + 1) {
-      sheetLogs.deleteRows(data2.length + 2, totalFilas - data2.length - 1);
-    }
-    const totalColumnas = sheetLogs.getMaxColumns();
-    if (totalColumnas > encabezadoLogs.length) {
-      sheetLogs.deleteColumns(encabezadoLogs.length + 1, totalColumnas - encabezadoLogs.length);
-    }
   }
 
-  // 🧹 Limpiar EncuestaOrdenes
-  const ultimaFilaEncuesta = sheetEncuesta.getLastRow();
-  if (ultimaFilaEncuesta > 1) {
-    sheetEncuesta.getRange(2, 1, ultimaFilaEncuesta - 1, 3).clearContent();
-  }
-
-  // ✅ Registrar solo órdenes liberadas cada 100
-  const totalLiberadas = data2.length;
+  // Encuesta de órdenes liberadas cada 100
   const registrosEncuesta = [];
 
-  for (let i = 99; i < totalLiberadas; i += 100) {
+  for (let i = 99; i < data2.length; i += 100) {
     const ordenNum = data2[i][0];
-    const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy HH:mm:ss");
+    const cliente = data2[i][2];
+    const fecha = data2[i][3];
+    const hora = data2[i][4];
+    const fechaHora = `${fecha} ${hora}`;
     const consecutivo = i + 1;
-    registrosEncuesta.push([consecutivo, ordenNum, timestamp]);
+    registrosEncuesta.push([consecutivo, ordenNum, fechaHora, cliente]);
   }
 
   if (registrosEncuesta.length > 0) {
-    sheetEncuesta.getRange(2, 1, registrosEncuesta.length, 3).setValues(registrosEncuesta);
+    sheetEncuesta.getRange(2, 1, registrosEncuesta.length, encabezadoEncuesta.length).setValues(registrosEncuesta);
   }
 
-  // 🧼 Limitar filas y columnas en EncuestaOrdenes
-  const totalFilasEncuesta = sheetEncuesta.getMaxRows();
-  const totalColumnasEncuesta = sheetEncuesta.getMaxColumns();
-
-  if (totalFilasEncuesta > registrosEncuesta.length + 1) {
-    sheetEncuesta.deleteRows(registrosEncuesta.length + 2, totalFilasEncuesta - registrosEncuesta.length - 1);
-  }
-
-  if (totalColumnasEncuesta > 3) {
-    sheetEncuesta.deleteColumns(4, totalColumnasEncuesta - 3);
-  }
-
-  // 🔚 Cierre de conexiones
   stmt1.close();
   stmt2.close();
   conn.close();
