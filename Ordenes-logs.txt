@@ -4,93 +4,61 @@ function actualizarOrdenesCredito() {
   const hojaEncuesta = "EncuestaOrdenes";
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  let sheetOrdenes = ss.getSheetByName(hojaOrdenes);
-  if (!sheetOrdenes) sheetOrdenes = ss.insertSheet(hojaOrdenes);
-  else sheetOrdenes.clear();
-
-  let sheetLogs = ss.getSheetByName(hojaLogs);
-  if (!sheetLogs) sheetLogs = ss.insertSheet(hojaLogs);
-  else sheetLogs.clear();
-
-  let sheetEncuesta = ss.getSheetByName(hojaEncuesta);
-  if (!sheetEncuesta) {
-    sheetEncuesta = ss.insertSheet(hojaEncuesta);
-  } else {
-    sheetEncuesta.clear();
-  }
-
   const encabezadoOrdenes = ["OrderNum", "Fecha", "Zona", "Cliente", "Estado", "Motivo Retención", "Observaciones Retención"];
   const encabezadoLogs = ["OrderNum", "Zona", "Cliente", "Fecha Liberación", "Hora Liberación", "UsuarioID", "Nombre Usuario", "Observaciones", "Estado"];
   const encabezadoEncuesta = ["N° en lista", "Número de Orden", "Fecha y hora del registro", "Cliente"];
 
+  // Hoja Ordenes
+  let sheetOrdenes = ss.getSheetByName(hojaOrdenes);
+  if (!sheetOrdenes) sheetOrdenes = ss.insertSheet(hojaOrdenes);
+  else sheetOrdenes.clear();
   sheetOrdenes.getRange(1, 1, 1, encabezadoOrdenes.length).setValues([encabezadoOrdenes]);
-  sheetLogs.getRange(1, 1, 1, encabezadoLogs.length).setValues([encabezadoLogs]);
-  sheetEncuesta.getRange(1, 1, 1, encabezadoEncuesta.length).setValues([encabezadoEncuesta]);
+
+  // Hoja Logs
+  let sheetLogs = ss.getSheetByName(hojaLogs);
+  if (!sheetLogs) sheetLogs = ss.insertSheet(hojaLogs);
+  const ordenesExistentes = sheetLogs.getDataRange().getValues().map(r => r[0].toString());
+
+  // Hoja Encuesta
+  let sheetEncuesta = ss.getSheetByName(hojaEncuesta);
+  if (!sheetEncuesta) {
+    sheetEncuesta = ss.insertSheet(hojaEncuesta);
+    sheetEncuesta.appendRow(encabezadoEncuesta);
+    const protection = sheetEncuesta.protect();
+    protection.setDescription("Protección encuesta de órdenes liberadas");
+    protection.removeEditors(protection.getEditors());
+    if (protection.canDomainEdit()) protection.setDomainEdit(false);
+  }
 
   const conn = Jdbc.getConnection("jdbc:sqlserver://35.243.175.82:1433;databaseName=EpicorRepTran", "udlxls", "#kYe-343");
 
   const queryRetenidas = `
-    SELECT 
-      d.OrderHed_OrderNum,
-      d.OrderHed_OrderDate,
-      d.Zona,
-      d.Customer_Name,
-      d.OrderHed_OrderHeld,
-      d.CreditoRetenido,
-      d.ObservacionesRetencionCredito
+    SELECT d.OrderHed_OrderNum, d.OrderHed_OrderDate, d.Zona, d.Customer_Name, d.ObservacionesRetencionCredito
     FROM EpicorRepTran.dbo.udvPortalCustDtlOV d
-    WHERE 
-      d.CreditoRetenido = 1
-      AND d.OrderHed_VoidOrder = 0
-      AND d.Zona != 'Comercial Agrosoil'
+    WHERE d.CreditoRetenido = 1 AND d.OrderHed_VoidOrder = 0 AND d.Zona != 'Comercial Agrosoil'
       AND (d.CreditOverride IS NULL OR d.CreditOverride = 0)
   `;
 
   const queryLiberadas = `
-    SELECT 
-      d.OrderHed_OrderNum,
-      d.Zona,
-      d.Customer_Name,
-      d.FechaLiberacionCredito,
-      d.HoraLiberacionCredito,
-      oh.CreditOverrideUserID,
-      u.Name,
-      d.ObservacionesRetencionCredito
+    SELECT d.OrderHed_OrderNum, d.Zona, d.Customer_Name, d.FechaLiberacionCredito, d.HoraLiberacionCredito,
+           oh.CreditOverrideUserID, u.Name, d.ObservacionesRetencionCredito
     FROM EpicorRepTran.dbo.udvPortalCustDtlOV d
-    JOIN EpicorRepTran.dbo.OrderHed oh 
-      ON d.OrderHed_OrderNum = oh.OrderNum AND d.OrderHed_Company = oh.Company
-    LEFT JOIN EpicorTrain10.dbo.UserFile u 
-      ON oh.CreditOverrideUserID = u.DcdUserID
-    WHERE 
-      d.CreditoRetenido = 0
-      AND d.OrderHed_VoidOrder = 0
-      AND d.Zona != 'Comercial Agrosoil'
-      AND oh.CreditOverride = 1
-      AND d.FechaLiberacionCredito IS NOT NULL
-      AND d.FechaLiberacionCredito >= DATEADD(DAY, -7, GETDATE())
-    ORDER BY d.FechaLiberacionCredito DESC
+    JOIN EpicorRepTran.dbo.OrderHed oh ON d.OrderHed_OrderNum = oh.OrderNum AND d.OrderHed_Company = oh.Company
+    LEFT JOIN EpicorTrain10.dbo.UserFile u ON oh.CreditOverrideUserID = u.DcdUserID
+    WHERE d.CreditoRetenido = 0 AND d.OrderHed_VoidOrder = 0 AND d.Zona != 'Comercial Agrosoil'
+      AND oh.CreditOverride = 1 AND d.FechaLiberacionCredito IS NOT NULL
+      AND d.FechaLiberacionCredito >= DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)
   `;
 
+  // Procesar órdenes retenidas
   const stmt1 = conn.createStatement();
   const results1 = stmt1.executeQuery(queryRetenidas);
   const data1 = [];
 
   while (results1.next()) {
-    let fechaOrden = "";
-    try {
-      const fechaRaw = results1.getString("OrderHed_OrderDate");
-      if (fechaRaw) {
-        const fechaObj = new Date(fechaRaw);
-        if (!isNaN(fechaObj)) {
-          fechaOrden = Utilities.formatDate(fechaObj, Session.getScriptTimeZone(), "dd/MM/yyyy");
-        }
-      }
-    } catch (e) {
-      fechaOrden = "";
-    }
-
+    const fecha = results1.getDate("OrderHed_OrderDate");
+    const fechaOrden = fecha ? Utilities.formatDate(new Date(fecha), Session.getScriptTimeZone(), "dd/MM/yyyy") : "";
     const observacion = (results1.getString("ObservacionesRetencionCredito") || "SIN OBSERVACIONES REGISTRADAS").toUpperCase();
-
     data1.push([
       results1.getString("OrderHed_OrderNum"),
       fechaOrden,
@@ -106,62 +74,53 @@ function actualizarOrdenesCredito() {
     sheetOrdenes.getRange(2, 1, data1.length, encabezadoOrdenes.length).setValues(data1);
   }
 
+  // Procesar órdenes liberadas
   const stmt2 = conn.createStatement();
   const results2 = stmt2.executeQuery(queryLiberadas);
-  const data2 = [];
+  const data2 = [], registrosEncuesta = [];
 
   while (results2.next()) {
-    let fechaLiberacion = "";
-    try {
-      const fechaRaw = results2.getString("FechaLiberacionCredito");
-      if (fechaRaw) {
-        const fechaObj = new Date(fechaRaw);
-        if (!isNaN(fechaObj)) {
-          fechaLiberacion = Utilities.formatDate(fechaObj, Session.getScriptTimeZone(), "dd/MM/yyyy");
-        }
-      }
-    } catch (e) {
-      fechaLiberacion = "";
-    }
+    const ordenNum = results2.getString("OrderHed_OrderNum");
+    if (ordenesExistentes.includes(ordenNum)) continue;
 
+    const fecha = results2.getDate("FechaLiberacionCredito");
     const hora = results2.getString("HoraLiberacionCredito") || "";
+    const fechaLiberacion = fecha ? Utilities.formatDate(new Date(fecha), Session.getScriptTimeZone(), "dd/MM/yyyy") : "";
+    const fechaHoraCompleta = fecha ? Utilities.formatDate(new Date(fecha), Session.getScriptTimeZone(), "dd/MM/yyyy") + " " + hora : "";
+
     const observacion = (results2.getString("ObservacionesRetencionCredito") || "SIN OBSERVACIONES REGISTRADAS").toUpperCase();
 
-    data2.push([
-      results2.getString("OrderHed_OrderNum"),
+    const fila = [
+      ordenNum,
       results2.getString("Zona"),
       results2.getString("Customer_Name"),
       fechaLiberacion,
       hora,
-      results2.getString("CreditOverrideUserID") || "",
-      results2.getString("Name") || "",
+      results2.getString("CreditOverrideUserID"),
+      results2.getString("Name"),
       observacion,
       "LIBERADA"
-    ]);
+    ];
+    data2.push(fila);
+
+    if ((data2.length) % 100 === 0) {
+      registrosEncuesta.push([
+        data2.length,
+        ordenNum,
+        fechaHoraCompleta,
+        results2.getString("Customer_Name")
+      ]);
+    }
   }
 
   if (data2.length > 0) {
-    sheetLogs.getRange(2, 1, data2.length, encabezadoLogs.length).setValues(data2);
-  }
-
-  // Encuesta de órdenes liberadas cada 100
-  const registrosEncuesta = [];
-
-  for (let i = 99; i < data2.length; i += 100) {
-    const ordenNum = data2[i][0];
-    const cliente = data2[i][2];
-    const fecha = data2[i][3];
-    const hora = data2[i][4];
-    const fechaHora = `${fecha} ${hora}`;
-    const consecutivo = i + 1;
-    registrosEncuesta.push([consecutivo, ordenNum, fechaHora, cliente]);
+    sheetLogs.appendRow([]);  // separador opcional
+    sheetLogs.getRange(sheetLogs.getLastRow() + 1, 1, data2.length, encabezadoLogs.length).setValues(data2);
   }
 
   if (registrosEncuesta.length > 0) {
-    sheetEncuesta.getRange(2, 1, registrosEncuesta.length, encabezadoEncuesta.length).setValues(registrosEncuesta);
+    sheetEncuesta.getRange(sheetEncuesta.getLastRow() + 1, 1, registrosEncuesta.length, 4).setValues(registrosEncuesta);
   }
 
-  stmt1.close();
-  stmt2.close();
-  conn.close();
+  stmt1.close(); stmt2.close(); conn.close();
 }
