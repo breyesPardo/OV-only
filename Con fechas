@@ -8,24 +8,25 @@ function actualizarOrdenesCredito() {
   const encabezadoLogs = ["OrderNum", "Zona", "Cliente", "Fecha Liberación", "Hora Liberación", "UsuarioID", "Nombre Usuario", "Observaciones", "Estado"];
   const encabezadoEncuesta = ["N° en lista", "Número de Orden", "Fecha y hora del registro", "Cliente"];
 
+  // Hoja Ordenes
   let sheetOrdenes = ss.getSheetByName(hojaOrdenes);
   if (!sheetOrdenes) sheetOrdenes = ss.insertSheet(hojaOrdenes);
   else sheetOrdenes.clear();
   sheetOrdenes.getRange(1, 1, 1, encabezadoOrdenes.length).setValues([encabezadoOrdenes]);
 
+  // Hoja Logs
   let sheetLogs = ss.getSheetByName(hojaLogs);
   if (!sheetLogs) sheetLogs = ss.insertSheet(hojaLogs);
-  const ordenesExistentes = sheetLogs.getDataRange().getValues().map(r => r[0].toString());
 
+  // Hoja Encuesta (la reescribiremos completamente)
   let sheetEncuesta = ss.getSheetByName(hojaEncuesta);
-  if (!sheetEncuesta) {
-    sheetEncuesta = ss.insertSheet(hojaEncuesta);
-    sheetEncuesta.appendRow(encabezadoEncuesta);
-    const protection = sheetEncuesta.protect();
-    protection.setDescription("Protección encuesta de órdenes liberadas");
-    protection.removeEditors(protection.getEditors());
-    if (protection.canDomainEdit()) protection.setDomainEdit(false);
-  }
+  if (!sheetEncuesta) sheetEncuesta = ss.insertSheet(hojaEncuesta);
+  else sheetEncuesta.clear(); // ← limpiar todo
+  sheetEncuesta.appendRow(encabezadoEncuesta);
+  const protection = sheetEncuesta.protect();
+  protection.setDescription("Protección encuesta de órdenes liberadas");
+  protection.removeEditors(protection.getEditors());
+  if (protection.canDomainEdit()) protection.setDomainEdit(false);
 
   const conn = Jdbc.getConnection("jdbc:sqlserver://35.243.175.82:1433;databaseName=EpicorRepTran", "udlxls", "#kYe-343");
 
@@ -77,9 +78,9 @@ function actualizarOrdenesCredito() {
   const results2 = stmt2.executeQuery(queryLiberadas);
   const data2 = [], registrosEncuesta = [];
 
+  let contadorEncuesta = 100;
   while (results2.next()) {
     const ordenNum = results2.getString("OrderHed_OrderNum");
-    if (ordenesExistentes.includes(ordenNum)) continue;
 
     const fecha = results2.getString("Fecha") || "";
     const hora = results2.getString("HoraLiberacionCredito") || "";
@@ -98,14 +99,13 @@ function actualizarOrdenesCredito() {
       "LIBERADA"
     ]);
 
-    if ((data2.length) % 100 === 0) {
-      registrosEncuesta.push([
-        data2.length,
-        ordenNum,
-        fechaHoraCompleta,
-        results2.getString("Customer_Name")
-      ]);
-    }
+    registrosEncuesta.push([
+      contadorEncuesta,
+      ordenNum,
+      fechaHoraCompleta,
+      results2.getString("Customer_Name")
+    ]);
+    contadorEncuesta += 100;
   }
 
   if (data2.length > 0) {
@@ -115,7 +115,7 @@ function actualizarOrdenesCredito() {
   }
 
   if (registrosEncuesta.length > 0) {
-    sheetEncuesta.getRange(sheetEncuesta.getLastRow() + 1, 1, registrosEncuesta.length, 4).setValues(registrosEncuesta);
+    sheetEncuesta.getRange(2, 1, registrosEncuesta.length, encabezadoEncuesta.length).setValues(registrosEncuesta);
   }
 
   stmt1.close(); stmt2.close(); conn.close();
