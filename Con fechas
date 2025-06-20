@@ -1,0 +1,122 @@
+function actualizarOrdenesCredito() {
+  const hojaOrdenes = "OrdenesRetenidas";
+  const hojaLogs = "LogsLiberaciones";
+  const hojaEncuesta = "EncuestaOrdenes";
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  const encabezadoOrdenes = ["OrderNum", "Fecha", "Zona", "Cliente", "Estado", "Motivo Retención", "Observaciones Retención"];
+  const encabezadoLogs = ["OrderNum", "Zona", "Cliente", "Fecha Liberación", "Hora Liberación", "UsuarioID", "Nombre Usuario", "Observaciones", "Estado"];
+  const encabezadoEncuesta = ["N° en lista", "Número de Orden", "Fecha y hora del registro", "Cliente"];
+
+  let sheetOrdenes = ss.getSheetByName(hojaOrdenes);
+  if (!sheetOrdenes) sheetOrdenes = ss.insertSheet(hojaOrdenes);
+  else sheetOrdenes.clear();
+  sheetOrdenes.getRange(1, 1, 1, encabezadoOrdenes.length).setValues([encabezadoOrdenes]);
+
+  let sheetLogs = ss.getSheetByName(hojaLogs);
+  if (!sheetLogs) sheetLogs = ss.insertSheet(hojaLogs);
+  const ordenesExistentes = sheetLogs.getDataRange().getValues().map(r => r[0].toString());
+
+  let sheetEncuesta = ss.getSheetByName(hojaEncuesta);
+  if (!sheetEncuesta) {
+    sheetEncuesta = ss.insertSheet(hojaEncuesta);
+    sheetEncuesta.appendRow(encabezadoEncuesta);
+    const protection = sheetEncuesta.protect();
+    protection.setDescription("Protección encuesta de órdenes liberadas");
+    protection.removeEditors(protection.getEditors());
+    if (protection.canDomainEdit()) protection.setDomainEdit(false);
+  }
+
+  const conn = Jdbc.getConnection("jdbc:sqlserver://35.243.175.82:1433;databaseName=EpicorRepTran", "udlxls", "#kYe-343");
+
+  const queryRetenidas = `
+    SELECT d.OrderHed_OrderNum, 
+           CONVERT(VARCHAR, d.OrderHed_OrderDate, 23) AS Fecha,
+           d.Zona, d.Customer_Name, d.ObservacionesRetencionCredito
+    FROM EpicorRepTran.dbo.udvPortalCustDtlOV d
+    WHERE d.CreditoRetenido = 1 AND d.OrderHed_VoidOrder = 0 AND d.Zona != 'Comercial Agrosoil'
+      AND (d.CreditOverride IS NULL OR d.CreditOverride = 0)
+  `;
+
+  const queryLiberadas = `
+    SELECT d.OrderHed_OrderNum, d.Zona, d.Customer_Name,
+           CONVERT(VARCHAR, d.FechaLiberacionCredito, 23) AS Fecha,
+           d.HoraLiberacionCredito,
+           oh.CreditOverrideUserID, u.Name, d.ObservacionesRetencionCredito
+    FROM EpicorRepTran.dbo.udvPortalCustDtlOV d
+    JOIN EpicorRepTran.dbo.OrderHed oh ON d.OrderHed_OrderNum = oh.OrderNum AND d.OrderHed_Company = oh.Company
+    LEFT JOIN EpicorTrain10.dbo.UserFile u ON oh.CreditOverrideUserID = u.DcdUserID
+    WHERE d.CreditoRetenido = 0 AND d.OrderHed_VoidOrder = 0 AND d.Zona != 'Comercial Agrosoil'
+      AND oh.CreditOverride = 1 AND d.FechaLiberacionCredito IS NOT NULL
+      AND d.FechaLiberacionCredito >= DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)
+  `;
+
+  const stmt1 = conn.createStatement();
+  const results1 = stmt1.executeQuery(queryRetenidas);
+  const data1 = [];
+
+  while (results1.next()) {
+    const fecha = results1.getString("Fecha") || "";
+    const observacion = (results1.getString("ObservacionesRetencionCredito") || "SIN OBSERVACIONES REGISTRADAS").toUpperCase();
+    data1.push([
+      results1.getString("OrderHed_OrderNum"),
+      fecha,
+      results1.getString("Zona"),
+      results1.getString("Customer_Name"),
+      "RETENIDA",
+      "CRÉDITO",
+      observacion
+    ]);
+  }
+
+  if (data1.length > 0) {
+    sheetOrdenes.getRange(2, 1, data1.length, encabezadoOrdenes.length).setValues(data1);
+  }
+
+  const stmt2 = conn.createStatement();
+  const results2 = stmt2.executeQuery(queryLiberadas);
+  const data2 = [], registrosEncuesta = [];
+
+  while (results2.next()) {
+    const ordenNum = results2.getString("OrderHed_OrderNum");
+    if (ordenesExistentes.includes(ordenNum)) continue;
+
+    const fecha = results2.getString("Fecha") || "";
+    const hora = results2.getString("HoraLiberacionCredito") || "";
+    const fechaHoraCompleta = fecha ? `${fecha} ${hora}` : "";
+    const observacion = (results2.getString("ObservacionesRetencionCredito") || "SIN OBSERVACIONES REGISTRADAS").toUpperCase();
+
+    data2.push([
+      ordenNum,
+      results2.getString("Zona"),
+      results2.getString("Customer_Name"),
+      fecha,
+      hora,
+      results2.getString("CreditOverrideUserID"),
+      results2.getString("Name"),
+      observacion,
+      "LIBERADA"
+    ]);
+
+    if ((data2.length) % 100 === 0) {
+      registrosEncuesta.push([
+        data2.length,
+        ordenNum,
+        fechaHoraCompleta,
+        results2.getString("Customer_Name")
+      ]);
+    }
+  }
+
+  if (data2.length > 0) {
+    const marcaTiempo = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy HH:mm:ss");
+    sheetLogs.appendRow(["", "", "", "", "", "", "", "", `← Nuevas liberaciones: ${marcaTiempo}`]);
+    sheetLogs.getRange(sheetLogs.getLastRow() + 1, 1, data2.length, encabezadoLogs.length).setValues(data2);
+  }
+
+  if (registrosEncuesta.length > 0) {
+    sheetEncuesta.getRange(sheetEncuesta.getLastRow() + 1, 1, registrosEncuesta.length, 4).setValues(registrosEncuesta);
+  }
+
+  stmt1.close(); stmt2.close(); conn.close();
+}
