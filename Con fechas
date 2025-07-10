@@ -82,14 +82,15 @@ function enviarOrdenesRetenidasPorZona() {
     };
 
     const url = "https://go.botmaker.com/api/v1.0/intent/v2";
-    const token = "eyJhbGciOiJIUzUxMiJ9.eyJidXNpbmVzc0lkIjoiY29saW5hZ3JvIiwibmFtZSI6IkJSQU5ET04gWUVTSUQgUkVZRVMgUEFSRE8iLCJhcGkiOnRydWUsImlkIjoiVmU5bWNWWVdKb2VEa1I1WHFUZzhGMkNlRmxXMiIsImV4cCI6MTkwMTIwODAzOCwianRpIjoiVmU5bWNWWVdKb2VEa1I1WHFUZzhGMkNlRmxXMiJ9.IyxhZ-wETqd70EatU9kpVpZCq6dEbywtd9_kkTjRMzo5A99lIGq9CNT0KTUKOE5Xg25D8o33pGkuWwgOWXDAlQ"; // ⚠️ Coloca tu token real aquí
+    const token = "eyJhbGciOiJIUzUxMiJ9.eyJidXNpbmVzc0lkIjoiY29saW5hZ3JvIiwibmFtZSI6IkJSQU5ET04gWUVTSUQgUkVZRVMgUEFSRE8iLCJhcGkiOnRydWUsImlkIjoiVmU5bWNWWVdKb2VEa1I1WHFUZzhGMkNlRmxXMiIsImV4cCI6MTkwMTIwODAzOCwianRpIjoiVmU5bWNWWVdKb2VEa1I1WHFUZzhGMkNlRmxXMiJ9.IyxhZ-wETqd70EatU9kpVpZCq6dEbywtd9_kkTjRMzo5A99lIGq9CNT0KTUKOE5Xg25D8o33pGkuWwgOWXDAlQ";
     const chatChannelNumber = "573142340715";
 
     const agrupadoPorZona = {};
 
     datos.forEach(fila => {
       const orden = fila[index.orden];
-      const fecha = fila[index.fecha];
+      const fechaRaw = fila[index.fecha];
+      const fecha = Utilities.formatDate(new Date(fechaRaw), Session.getScriptTimeZone(), "dd/MM/yyyy");
       const zona = fila[index.zona];
       const cliente = fila[index.cliente];
       const observaciones = fila[index.observaciones];
@@ -104,7 +105,7 @@ function enviarOrdenesRetenidasPorZona() {
         };
       }
 
-      agrupadoPorZona[zona].ordenesTexto.push(`🔹 *Orden:* ${orden} - ${cliente} - ${fecha}`);
+      agrupadoPorZona[zona].ordenesTexto.push(`🔹 *Orden:* ${orden} - ${fecha}`);
       agrupadoPorZona[zona].observacionesTexto.add(`📝 ${orden}: ${observaciones || "Sin observación"}`);
       agrupadoPorZona[zona].clientesSet.add(cliente);
     });
@@ -119,7 +120,7 @@ function enviarOrdenesRetenidasPorZona() {
       const ordenes = data.ordenesTexto.join("\n");
       const observaciones = Array.from(data.observacionesTexto).join("\n");
       const clientes = Array.from(data.clientesSet);
-      const primerCliente = clientes[0] || "VARIOS CLIENTES";
+      const primerCliente = clientes.length === 1 ? clientes[0] : "VARIOS CLIENTES";
 
       const params = {
         "1": fechaReporte,
