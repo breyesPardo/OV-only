@@ -1,0 +1,166 @@
+function enviarOrdenesRetenidasPorZona() {
+  try {
+    Logger.log("🚀 Iniciando envío de órdenes retenidas por zona...");
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const hojaOrdenes = ss.getSheetByName("OrdenesRetenidas");
+
+    if (!hojaOrdenes) {
+      Logger.log("❌ La hoja 'OrdenesRetenidas' no existe.");
+      return;
+    }
+
+    const encabezados = hojaOrdenes.getRange(1, 1, 1, hojaOrdenes.getLastColumn()).getValues()[0];
+    const todasLasFilas = hojaOrdenes.getRange(2, 1, hojaOrdenes.getLastRow() - 1, hojaOrdenes.getLastColumn()).getValues();
+
+    // ✅ Filtramos solo filas con número de orden válido
+    const datos = todasLasFilas.filter(fila => fila[0] && fila[0].toString().trim() !== "");
+
+    const index = {
+      orden: encabezados.indexOf("OrderNum"),
+      fecha: encabezados.indexOf("Fecha"),
+      zona: encabezados.indexOf("Zona"),
+      cliente: encabezados.indexOf("Cliente"),
+      estado: encabezados.indexOf("Estado"),
+      motivo: encabezados.indexOf("Motivo Retención"),
+      observaciones: encabezados.indexOf("Observaciones Retención")
+    };
+
+    const zonaANumero = {
+      "Zona1Cundinamarca-Boyacá-Santa": "3182260739",
+      "Zona2-Cundinamarca": "3182260739",
+      "Zona3-Boyacá": "3182260739",
+      "Zona4-Santander-Cesar": "3182260739",
+      "Zona5-Norte de Santander": "3182260739",
+      "Zona6-Suroeste Antioqueño": "3182260739",
+      "Zona7-Oriente y Nte Antioquía": "3182260739",
+      "Zona8-Meta": "3182260739",
+      "Zona9-Casanaré": "3182260739",
+      "Zona10-Tolima Centro - Norte": "3182260739",
+      "Zona11-Tolima Sur y Oriente": "3182260739",
+      "Zona12-Huila Norte": "3182260739",
+      "Zona14-HuilaCentroSur-Caquetá": "3182260739",
+      "Zona15-Cauca": "3182260739",
+      "Zona16-Nariño": "3182260739",
+      "Zona17-Valle": "3182260739",
+      "Zona18-Eje Cafetero": "3182260739",
+      "Zona19 Palma": "3182260739",
+      "Zona20 Urabá": "3182260739",
+      "Zona21 Caña": "3182260739",
+      "Zona23 - Caribe seco": "3182260739",
+      "Zona25 Flores": "3182260739",
+      "Ecuador": "3182260739",
+      "Licitaciones Colinagro": "3182260739",
+      "Bolivia": "3182260739",
+      "Gerencia General": "3182260739"
+    };
+
+    const zonaANombre = {
+      "Zona1Cundinamarca-Boyacá-Santa": "Juan Camilo Gil Orjuela",
+      "Zona2-Cundinamarca": "Sergio Andres Rojas Sanchez",
+      "Zona3-Boyacá": "Yury Fonseca Patarroyo",
+      "Zona4-Santander-Cesar": "Oscar Fernando Chingate Cruz",
+      "Zona5-Norte de Santander": "Freddy Andres Bastianelli Fontana",
+      "Zona6-Suroeste Antioqueño": "Carlos Andres Arboleda Tabares",
+      "Zona7-Oriente y Nte Antioquía": "Rafael Leonardo Peña Sarmiento",
+      "Zona8-Meta": "Ximena Nathalia Nuñez Cruz",
+      "Zona9-Casanaré": "Angel Alonso Vasquez Morales",
+      "Zona10-Tolima Centro - Norte": "Assad Fraija Lopera",
+      "Zona11-Tolima Sur y Oriente": "Edna Liliana Portillo",
+      "Zona12-Huila Norte": "Domingo Jose Soto Martinez",
+      "Zona14-HuilaCentroSur-Caquetá": "Ivan Dario Lopez Rubio",
+      "Zona15-Cauca": "Claudia Patricia Ussa",
+      "Zona16-Nariño": "Carlos Alberto Castillo Ñañez",
+      "Zona17-Valle": "Diego Herney Guisa Velasquez",
+      "Zona18-Eje Cafetero": "Juan Pablo Londoño Aristizabal",
+      "Zona19 Palma": "Juan Pablo Carranza",
+      "Zona20 Urabá": "Gadelia Gliseth Gomez Gomez",
+      "Zona21 Caña": "Juan Pablo Carranza",
+      "Zona23 - Caribe seco": "Sandra Judith Castillo",
+      "Zona25 Flores": "Javier Leonardo Erazo Velandia",
+      "Ecuador": "Sandra Valverde",
+      "Licitaciones Colinagro": "Sandra Valverde",
+      "Bolivia": "Representante sin asignar",
+      "Gerencia General": "Representante sin asignar"
+    };
+
+    const url = "https://go.botmaker.com/api/v1.0/intent/v2";
+    const token = "eyJhbGciOiJIUzUxMiJ9.eyJidXNpbmVzc0lkIjoiY29saW5hZ3JvIiwibmFtZSI6IkJSQU5ET04gWUVTSUQgUkVZRVMgUEFSRE8iLCJhcGkiOnRydWUsImlkIjoiVmU5bWNWWVdKb2VEa1I1WHFUZzhGMkNlRmxXMiIsImV4cCI6MTkwMTIwODAzOCwianRpIjoiVmU5bWNWWVdKb2VEa1I1WHFUZzhGMkNlRmxXMiJ9.IyxhZ-wETqd70EatU9kpVpZCq6dEbywtd9_kkTjRMzo5A99lIGq9CNT0KTUKOE5Xg25D8o33pGkuWwgOWXDAlQ";
+    const chatChannelNumber = "573142340715";
+
+    const agrupadoPorZona = {};
+
+    datos.forEach(fila => {
+      const orden = fila[index.orden];
+      const fechaRaw = fila[index.fecha];
+      const fecha = Utilities.formatDate(new Date(fechaRaw), Session.getScriptTimeZone(), "dd/MM/yyyy");
+      const zona = fila[index.zona];
+      const cliente = fila[index.cliente];
+      const observaciones = fila[index.observaciones];
+
+      if (!zona || !orden) return;
+
+      if (!agrupadoPorZona[zona]) {
+        agrupadoPorZona[zona] = {
+          ordenesTexto: [],
+          observacionesTexto: new Set(),
+          clientesSet: new Set()
+        };
+      }
+
+      agrupadoPorZona[zona].ordenesTexto.push(`🔹 *Orden:* ${orden} - ${fecha}`);
+      agrupadoPorZona[zona].observacionesTexto.add(`📝 ${orden}: ${observaciones || "Sin observación"}`);
+      agrupadoPorZona[zona].clientesSet.add(cliente);
+    });
+
+    Object.keys(agrupadoPorZona).forEach((zona, idx) => {
+      const numeroDestino = zonaANumero[zona] || "3182260739";
+      const nombreRepresentante = zonaANombre[zona] || "Representante sin asignar";
+      const telefono = numeroDestino.startsWith("57") ? numeroDestino : "57" + numeroDestino;
+      const fechaReporte = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy HH:mm:ss");
+
+      const data = agrupadoPorZona[zona];
+      const ordenes = data.ordenesTexto.join("\n");
+      const observaciones = Array.from(data.observacionesTexto).join("\n");
+      const clientes = Array.from(data.clientesSet);
+      const primerCliente = clientes.length === 1 ? clientes[0] : "VARIOS CLIENTES";
+
+      const params = {
+        "1": fechaReporte,
+        "2": nombreRepresentante,
+        "3": zona,
+        "4": primerCliente,
+        "5": ordenes,
+        "6": observaciones
+      };
+
+      const payload = {
+        chatPlatform: "whatsapp",
+        chatChannelNumber: chatChannelNumber,
+        platformContactId: telefono,
+        ruleNameOrId: "reporte_ordenes_retenidas",
+        params: params,
+        clientPayload: `ordenesretenidas_${zona.replace(/\s+/g, "_")}_${new Date().getTime()}`
+      };
+
+      const options = {
+        method: "post",
+        contentType: "application/json",
+        payload: JSON.stringify(payload),
+        headers: { "access-token": token },
+        muteHttpExceptions: true
+      };
+
+      try {
+        const response = UrlFetchApp.fetch(url, options);
+        Logger.log(`✅ [${idx + 1}] Enviado a ${zona} (${nombreRepresentante}) → ${telefono}`);
+      } catch (error) {
+        Logger.log(`❌ Error al enviar a zona ${zona}: ${error.message}`);
+      }
+    });
+
+    Logger.log("✅ Finalizado envío de órdenes retenidas.");
+  } catch (error) {
+    Logger.log("❌ Error general: " + error.message);
+  }
+}
