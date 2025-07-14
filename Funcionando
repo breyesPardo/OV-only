@@ -137,13 +137,25 @@ function actualizarOrdenesCredito() {
 
 
 
+
+
 function enviarOrdenesUnaPorUna() {
   const hojaOrdenes = "OrdenesRetenidas";
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(hojaOrdenes);
-  if (!sheet) return Logger.log("❌ Hoja OrdenesRetenidas no encontrada");
+  if (!sheet) {
+    Logger.log("❌ Hoja OrdenesRetenidas no encontrada");
+    SpreadsheetApp.getUi().alert("Hoja 'OrdenesRetenidas' no encontrada.");
+    return;
+  }
 
   const datos = sheet.getDataRange().getValues();
+  if (datos.length < 2) {
+    Logger.log("⚠️ No hay datos suficientes para procesar (mínimo 1 encabezado y 1 fila).");
+    SpreadsheetApp.getUi().alert("No hay filas de datos en la hoja 'OrdenesRetenidas'.");
+    return;
+  }
+
   const encabezados = datos[0];
   const filas = datos.slice(1);
 
@@ -153,7 +165,11 @@ function enviarOrdenesUnaPorUna() {
   const idxFecha = encabezados.indexOf("Fecha");
   const idxObservacion = encabezados.indexOf("Observación");
 
-  // Crear columna ResultadoEnvio si no existe
+  if ([idxZona, idxCliente, idxOrden, idxFecha, idxObservacion].includes(-1)) {
+    SpreadsheetApp.getUi().alert("❌ Faltan columnas requeridas: 'Zona', 'Cliente', 'Órden', 'Fecha', 'Observación'");
+    return;
+  }
+
   let idxResultado = encabezados.indexOf("ResultadoEnvio");
   if (idxResultado === -1) {
     sheet.getRange(1, encabezados.length + 1).setValue("ResultadoEnvio");
@@ -219,24 +235,22 @@ function enviarOrdenesUnaPorUna() {
   };
 
   const url = "https://go.botmaker.com/api/v1.0/intent/v2";
-  const token = "eyJhbGciOiJIUzUxMiJ9.eyJidXNpbmVzc0lkIjoiY29saW5hZ3JvIiwibmFtZSI6IkJSQU5ET04gWUVTSUQgUkVZRVMgUEFSRE8iLCJhcGkiOnRydWUsImlkIjoiVmU5bWNWWVdKb2VEa1I1WHFUZzhGMkNlRmxXMiIsImV4cCI6MTkwMTIwODAzOCwianRpIjoiVmU5bWNWWVdKb2VEa1I1WHFUZzhGMkNlRmxXMiJ9.IyxhZ-wETqd70EatU9kpVpZCq6dEbywtd9_kkTjRMzo5A99lIGq9CNT0KTUKOE5Xg25D8o33pGkuWwgOWXDAlQ"; // token real
+  const token = "eyJhbGciOiJIUzUxMiJ9.eyJidXNpbmVzc0lkIjoiY29saW5hZ3JvIiwibmFtZSI6IkJSQU5ET04gWUVTSUQgUkVZRVMgUEFSRE8iLCJhcGkiOnRydWUsImlkIjoiVmU5bWNWWVdKb2VEa1I1WHFUZzhGMkNlRmxXMiIsImV4cCI6MTkwMTIwODAzOCwianRpIjoiVmU5bWNWWVdKb2VEa1I1WHFUZzhGMkNlRmxXMiJ9.IyxhZ-wETqd70EatU9kpVpZCq6dEbywtd9_kkTjRMzo5A99lIGq9CNT0KTUKOE5Xg25D8o33pGkuWwgOWXDAlQ";
   const chatChannelNumber = "573142340715";
 
   filas.forEach((fila, i) => {
     const zona = fila[idxZona];
     const cliente = fila[idxCliente];
     const orden = fila[idxOrden];
-    const fechaRaw = fila[idxFecha];
-    const observacion = fila[idxObservacion] || "SIN OBSERVACIÓN";
+    const fecha = fila[idxFecha] ? Utilities.formatDate(new Date(fila[idxFecha]), "GMT-5", "dd/MM/yyyy") : "Sin fecha";
 
-    const resultadoPrevio = fila[idxResultado];
-    if (resultadoPrevio && resultadoPrevio.toString().startsWith("✅")) return; // Ya enviado
+    let observacion = (fila[idxObservacion] || "").toString().trim();
+    const prefix = `${orden}:`;
+    if (observacion.toUpperCase().startsWith(prefix)) {
+      observacion = observacion.slice(prefix.length).trim();
+    }
 
-    const fecha = fechaRaw
-      ? Utilities.formatDate(new Date(fechaRaw), "GMT-5", "dd/MM/yyyy")
-      : "Sin fecha";
-
-    const telefono = "57" + zonaANumero[zona];
+    const telefono = "57" + (zonaANumero[zona] || "3182260739");
     const representante = zonaANombre[zona] || "Representante sin asignar";
     const fechaReporte = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy HH:mm:ss");
     const clientPayload = `ordenretenida_${zona.replace(/\s+/g, "_")}_${cliente.replace(/\s+/g, "_")}_${orden}_${Date.now()}`;
@@ -247,7 +261,7 @@ function enviarOrdenesUnaPorUna() {
       "3": zona,
       "4": cliente,
       "5": `🔹 Orden: ${orden} - ${fecha}`,
-      "6": `📄 ${orden}: ${observacion}`
+      "6": `📄 ${orden}: ${observacion || "SIN OBSERVACIÓN"}`
     };
 
     const payload = {
@@ -271,14 +285,17 @@ function enviarOrdenesUnaPorUna() {
       const response = UrlFetchApp.fetch(url, options);
       const texto = response.getContentText();
       const resultado = texto.includes("success") ? "✅ Enviado" : `⚠️ ${texto}`;
-      Logger.log(`✅ ${zona} - ${cliente} - Orden ${orden}: ${resultado}`);
+      Logger.log(`${zona} - ${cliente} - Orden ${orden}: ${resultado}`);
       sheet.getRange(i + 2, idxResultado + 1).setValue(resultado);
     } catch (e) {
       const errorMsg = `❌ Error: ${e.message}`;
-      Logger.log(`❌ ${zona} - ${cliente} - Orden ${orden}: ${errorMsg}`);
+      Logger.log(`${zona} - ${cliente} - Orden ${orden}: ${errorMsg}`);
       sheet.getRange(i + 2, idxResultado + 1).setValue(errorMsg);
     }
   });
 
-  Logger.log("✅ Proceso de envío individual finalizado.");
+  Logger.log("✅ Proceso de envío finalizado.");
 }
+
+
+
