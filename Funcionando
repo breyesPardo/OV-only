@@ -10,7 +10,11 @@ function actualizarOrdenesCredito() {
 
   // Hoja Ordenes
   let sheetOrdenes = ss.getSheetByName(hojaOrdenes);
-  if (!sheetOrdenes) sheetOrdenes = ss.insertSheet(hojaOrdenes); else sheetOrdenes.clear();
+  if (!sheetOrdenes) {
+    sheetOrdenes = ss.insertSheet(hojaOrdenes);
+  } else {
+    sheetOrdenes.clear();
+  }
   sheetOrdenes.getRange(1, 1, 1, encabezadoOrdenes.length).setValues([encabezadoOrdenes]);
 
   // Hoja Logs
@@ -64,10 +68,23 @@ function actualizarOrdenesCredito() {
 
   if (filasOrdenes.length > 0) {
     sheetOrdenes.getRange(2, 1, filasOrdenes.length, encabezadoOrdenes.length).setValues(filasOrdenes);
+    
+    // 🔹 Borrar columnas después de la G (Motivo Retención)
+    const totalCols = sheetOrdenes.getMaxColumns();
+    if (totalCols > encabezadoOrdenes.length) {
+      sheetOrdenes.deleteColumns(encabezadoOrdenes.length + 1, totalCols - encabezadoOrdenes.length);
+    }
+
+    // 🔹 Borrar filas vacías sobrantes
+    const totalRows = sheetOrdenes.getMaxRows();
+    const ultimaFila = sheetOrdenes.getLastRow();
+    if (totalRows > ultimaFila) {
+      sheetOrdenes.deleteRows(ultimaFila + 1, totalRows - ultimaFila);
+    }
   }
 
   // -----------------------
-  // Ahora registros liberados
+  // Registros liberados
   // -----------------------
 
   const queryLiberadas = `
@@ -130,9 +147,7 @@ function actualizarOrdenesCredito() {
 
   stmt1.close(); stmt2.close(); conn.close();
 }
-
-
-
+ 
 
 
 
@@ -296,6 +311,3 @@ function enviarOrdenesUnaPorUna() {
 
   Logger.log("✅ Proceso de envío finalizado.");
 }
-
-
-
