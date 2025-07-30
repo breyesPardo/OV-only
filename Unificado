@@ -1,0 +1,244 @@
+function actualizarYEnviarOrdenesCredito() {
+  const hojaOrdenes = "OrdenesRetenidas";
+  const hojaLogs = "LogsLiberaciones";
+  const hojaEncuesta = "EncuestaOrdenes";
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  const encabezadoOrdenes = ["Zona", "Cliente", "Órden", "Fecha", "Observación", "Estado", "Motivo Retención"];
+  const encabezadoLogs = ["OrderNum", "Zona", "Cliente", "Fecha Liberación", "Hora Liberación", "UsuarioID", "Nombre Usuario", "Observaciones", "Estado"];
+  const encabezadoEncuesta = ["N° en lista", "Número de Orden", "Fecha y hora del registro", "Cliente"];
+
+  let sheetOrdenes = ss.getSheetByName(hojaOrdenes);
+  if (!sheetOrdenes) sheetOrdenes = ss.insertSheet(hojaOrdenes); else sheetOrdenes.clear();
+  sheetOrdenes.getRange(1, 1, 1, encabezadoOrdenes.length).setValues([encabezadoOrdenes]);
+
+  let sheetLogs = ss.getSheetByName(hojaLogs);
+  if (!sheetLogs) sheetLogs = ss.insertSheet(hojaLogs);
+  if (sheetLogs.getLastRow() === 0) sheetLogs.appendRow(encabezadoLogs);
+
+  let sheetEncuesta = ss.getSheetByName(hojaEncuesta);
+  if (!sheetEncuesta) sheetEncuesta = ss.insertSheet(hojaEncuesta); else sheetEncuesta.clear();
+  sheetEncuesta.appendRow(encabezadoEncuesta);
+  const protection = sheetEncuesta.protect();
+  protection.setDescription("Protección encuesta de órdenes liberadas");
+  protection.removeEditors(protection.getEditors());
+  if (protection.canDomainEdit()) protection.setDomainEdit(false);
+
+  const conn = Jdbc.getConnection("jdbc:sqlserver://35.243.175.82:1433;databaseName=EpicorRepTran", "udlxls", "#kYe-343");
+
+  const queryRetenidas = `
+    SELECT d.OrderHed_OrderNum, 
+           CONVERT(VARCHAR, d.OrderHed_OrderDate, 23) AS Fecha,
+           d.Zona, d.Customer_Name, d.ObservacionesRetencionCredito
+    FROM EpicorRepTran.dbo.udvPortalCustDtlOV d
+    WHERE d.CreditoRetenido = 1 AND d.OrderHed_VoidOrder = 0 AND d.Zona != 'Comercial Agrosoil'
+      AND (d.CreditOverride IS NULL OR d.CreditOverride = 0)
+  `;
+
+  const stmt1 = conn.createStatement();
+  const results1 = stmt1.executeQuery(queryRetenidas);
+  const filasOrdenes = [];
+
+  while (results1.next()) {
+    const zona = results1.getString("Zona");
+    const cliente = results1.getString("Customer_Name");
+    const orden = results1.getString("OrderHed_OrderNum");
+    const fecha = results1.getString("Fecha");
+    const observacion = (results1.getString("ObservacionesRetencionCredito") || "SIN OBSERVACIONES REGISTRADAS").toUpperCase();
+
+    filasOrdenes.push([
+      zona, cliente, orden, fecha,
+      `${orden}: ${observacion}`, "RETENIDA", "CRÉDITO"
+    ]);
+  }
+
+  if (filasOrdenes.length > 0) {
+    sheetOrdenes.getRange(2, 1, filasOrdenes.length, encabezadoOrdenes.length).setValues(filasOrdenes);
+    const totalCols = sheetOrdenes.getMaxColumns();
+    if (totalCols > encabezadoOrdenes.length) {
+      sheetOrdenes.deleteColumns(encabezadoOrdenes.length + 1, totalCols - encabezadoOrdenes.length);
+    }
+    const totalRows = sheetOrdenes.getMaxRows();
+    const ultimaFila = sheetOrdenes.getLastRow();
+    if (totalRows > ultimaFila) {
+      sheetOrdenes.deleteRows(ultimaFila + 1, totalRows - ultimaFila);
+    }
+  }
+
+  const queryLiberadas = `
+    SELECT d.OrderHed_OrderNum, d.Zona, d.Customer_Name,
+           CONVERT(VARCHAR, d.FechaLiberacionCredito, 23) AS Fecha,
+           d.HoraLiberacionCredito,
+           oh.CreditOverrideUserID, u.Name, d.ObservacionesRetencionCredito
+    FROM EpicorRepTran.dbo.udvPortalCustDtlOV d
+    JOIN EpicorRepTran.dbo.OrderHed oh ON d.OrderHed_OrderNum = oh.OrderNum AND d.OrderHed_Company = oh.Company
+    LEFT JOIN EpicorTrain10.dbo.UserFile u ON oh.CreditOverrideUserID = u.DcdUserID
+    WHERE d.CreditoRetenido = 0 AND d.OrderHed_VoidOrder = 0 AND d.Zona != 'Comercial Agrosoil'
+      AND oh.CreditOverride = 1 AND d.FechaLiberacionCredito IS NOT NULL
+      AND d.FechaLiberacionCredito >= DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)
+  `;
+
+  const stmt2 = conn.createStatement();
+  const results2 = stmt2.executeQuery(queryLiberadas);
+  const dataLiberadas = [], registrosEncuesta = [];
+  let contadorEncuesta = 100;
+
+  while (results2.next()) {
+    const ordenNum = results2.getString("OrderHed_OrderNum");
+    const zona = results2.getString("Zona");
+    const cliente = results2.getString("Customer_Name");
+    const fecha = results2.getString("Fecha") || "";
+    const hora = results2.getString("HoraLiberacionCredito") || "";
+    const fechaHoraCompleta = fecha ? `${fecha} ${hora}` : "";
+    const observacion = (results2.getString("ObservacionesRetencionCredito") || "SIN OBSERVACIONES REGISTRADAS").toUpperCase();
+
+    dataLiberadas.push([ordenNum, zona, cliente, fecha, hora, results2.getString("CreditOverrideUserID"),
+      results2.getString("Name"), observacion, "LIBERADA"]);
+
+    registrosEncuesta.push([contadorEncuesta, ordenNum, fechaHoraCompleta, cliente]);
+    contadorEncuesta += 100;
+  }
+
+  if (dataLiberadas.length > 0) {
+    const marcaTiempo = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy HH:mm:ss");
+    sheetLogs.appendRow(["", "", "", "", "", "", "", "", `← Nuevas liberaciones: ${marcaTiempo}`]);
+    sheetLogs.getRange(sheetLogs.getLastRow() + 1, 1, dataLiberadas.length, encabezadoLogs.length).setValues(dataLiberadas);
+  }
+
+  if (registrosEncuesta.length > 0) {
+    sheetEncuesta.getRange(2, 1, registrosEncuesta.length, encabezadoEncuesta.length).setValues(registrosEncuesta);
+  }
+
+  stmt1.close(); stmt2.close(); conn.close();
+
+  // === Zonas a Teléfono
+  const zonaANumero = {
+    "Zona1Cundinamarca-Boyacá-Santa": "3182260739",
+    "Zona2-Cundinamarca": "3182260739",
+    "Zona3-Boyacá": "3182260739",
+    "Zona4-Santander-Cesar": "3182260739",
+    "Zona5-Norte de Santander": "3182260739",
+    "Zona6-Suroeste Antioqueño": "3182260739",
+    "Zona7-Oriente y Nte Antioquía": "3182260739",
+    "Zona8-Meta": "3182260739",
+    "Zona9-Casanaré": "3182260739",
+    "Zona10-Tolima Centro - Norte": "3182260739",
+    "Zona11-Tolima Sur y Oriente": "3182260739",
+    "Zona12-Huila Norte": "3182260739",
+    "Zona14-HuilaCentroSur-Caquetá": "3182260739",
+    "Zona15-Cauca": "3182260739",
+    "Zona16-Nariño": "3182260739",
+    "Zona17-Valle": "3182260739",
+    "Zona18-Eje Cafetero": "3182260739",
+    "Zona 19 Palma": "3182260739",
+    "Zona 20 Urabá": "3182260739",
+    "Zona 21 Caña": "3182260739",
+    "Zona 23 - Caribe seco": "3182260739",
+    "Zona 25 Flores": "3182260739",
+    "Ecuador": "3182260739",
+    "Licitaciones Colinagro": "3182260739",
+    "Bolivia": "3182260739",
+    "Gerencia General": "3182260739"
+  };
+
+  const zonaANombre = {
+    "Zona1Cundinamarca-Boyacá-Santa": "Juan Camilo Gil Orjuela",
+    "Zona2-Cundinamarca": "Sergio Andres Rojas Sanchez",
+    "Zona3-Boyacá": "Yury Fonseca Patarroyo",
+    "Zona4-Santander-Cesar": "Oscar Fernando Chingate Cruz",
+    "Zona5-Norte de Santander": "Freddy Andres Bastianelli Fontana",
+    "Zona6-Suroeste Antioqueño": "Carlos Andres Arboleda Tabares",
+    "Zona7-Oriente y Nte Antioquía": "Rafael Leonardo Peña Sarmiento",
+    "Zona8-Meta": "Ximena Nathalia Nuñez Cruz",
+    "Zona9-Casanaré": "Angel Alonso Vasquez Morales",
+    "Zona10-Tolima Centro - Norte": "Assad Fraija Lopera",
+    "Zona11-Tolima Sur y Oriente": "Edna Liliana Portillo",
+    "Zona12-Huila Norte": "Domingo Jose Soto Martinez",
+    "Zona14-HuilaCentroSur-Caquetá": "Ivan Dario Lopez Rubio",
+    "Zona15-Cauca": "Claudia Patricia Ussa",
+    "Zona16-Nariño": "Carlos Alberto Castillo Ñañez",
+    "Zona17-Valle": "Diego Herney Guisa Velasquez",
+    "Zona18-Eje Cafetero": "Juan Pablo Londoño Aristizabal",
+    "Zona 19 Palma": "Juan Pablo Carranza",
+    "Zona 20 Urabá": "Gadelia Gliseth Gomez Gomez",
+    "Zona 21 Caña": "Juan Pablo Carranza",
+    "Zona 23 - Caribe seco": "Sandra Judith Castillo",
+    "Zona 25 Flores": "Javier Leonardo Erazo Velandia",
+    "Ecuador": "Sandra Valverde",
+    "Licitaciones Colinagro": "Sandra Valverde",
+    "Bolivia": "Representante sin asignar",
+    "Gerencia General": "Representante sin asignar"
+  };
+
+  const datos = sheetOrdenes.getDataRange().getValues();
+  const encabezados = datos[0];
+  const filas = datos.slice(1);
+
+  const idxZona = encabezados.indexOf("Zona");
+  const idxCliente = encabezados.indexOf("Cliente");
+  const idxOrden = encabezados.indexOf("Órden");
+  const idxFecha = encabezados.indexOf("Fecha");
+  const idxObservacion = encabezados.indexOf("Observación");
+
+  let idxResultado = encabezados.indexOf("ResultadoEnvio");
+  if (idxResultado === -1) {
+    sheetOrdenes.getRange(1, encabezados.length + 1).setValue("ResultadoEnvio");
+    idxResultado = encabezados.length;
+  }
+
+  const url = "https://go.botmaker.com/api/v1.0/intent/v2";
+  const token = "eyJhbGciOiJIUzUxMiJ9.eyJidXNpbmVzc0lkIjoiY29saW5hZ3JvIiwibmFtZSI6IkJSQU5ET04gWUVTSUQgUkVZRVMgUEFSRE8iLCJhcGkiOnRydWUsImlkIjoiVmU5bWNWWVdKb2VEa1I1WHFUZzhGMkNlRmxXMiIsImV4cCI6MTkwMTIwODAzOCwianRpIjoiVmU5bWNWWVdKb2VEa1I1WHFUZzhGMkNlRmxXMiJ9.IyxhZ-wETqd70EatU9kpVpZCq6dEbywtd9_kkTjRMzo5A99lIGq9CNT0KTUKOE5Xg25D8o33pGkuWwgOWXDAlQ"; // reemplaza con tu token real
+  const chatChannelNumber = "573142340715";
+
+  filas.forEach((fila, i) => {
+    const zona = fila[idxZona];
+    const cliente = fila[idxCliente];
+    const orden = fila[idxOrden];
+    const fecha = fila[idxFecha] ? Utilities.formatDate(new Date(fila[idxFecha]), "GMT-5", "dd/MM/yyyy") : "Sin fecha";
+    let observacion = (fila[idxObservacion] || "").toString().trim();
+    if (observacion.toUpperCase().startsWith(`${orden}:`)) observacion = observacion.slice(`${orden}:`.length).trim();
+
+    const telefono = zonaANumero[zona] || "573182260739";
+    const representante = zonaANombre[zona] || "Representante sin asignar";
+    const fechaReporte = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy HH:mm:ss");
+    const clientPayload = `orden_${zona}_${cliente}_${orden}_${Date.now()}`.replace(/\s+/g, "_");
+
+    const params = {
+      "1": fechaReporte,
+      "2": zona,
+      "3": representante,
+      "4": cliente,
+      "5": `🔹 Orden: ${orden} - ${fecha}`,
+      "6": `📄 ${orden}: ${observacion || "SIN OBSERVACIÓN"}`
+    };
+
+    const payload = {
+      chatPlatform: "whatsapp",
+      chatChannelNumber,
+      platformContactId: telefono,
+      ruleNameOrId: "reporte_ordenes_retenidas",
+      params,
+      clientPayload
+    };
+
+    const options = {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify(payload),
+      headers: { "access-token": token },
+      muteHttpExceptions: true
+    };
+
+    try {
+      const response = UrlFetchApp.fetch(url, options);
+      const texto = response.getContentText();
+      const resultado = texto.includes("success") ? "✅ Enviado" : `⚠️ ${texto}`;
+      sheetOrdenes.getRange(i + 2, idxResultado + 1).setValue(resultado);
+    } catch (e) {
+      const errorMsg = `❌ Error: ${e.message}`;
+      sheetOrdenes.getRange(i + 2, idxResultado + 1).setValue(errorMsg);
+    }
+  });
+
+  Logger.log("✅ Proceso completo: actualización y envío finalizado.");
+}
