@@ -4,41 +4,35 @@ function actualizarYEnviarOrdenesCredito() {
   const hojaEncuesta = "EncuestaOrdenes";
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
+  // Eliminar hoja TrazabilidadEnvios si existe
+  const hojaTrazabilidad = ss.getSheetByName("TrazabilidadEnvios");
+  if (hojaTrazabilidad) {
+    ss.deleteSheet(hojaTrazabilidad);
+  }
+
   const encabezadoOrdenes = ["Zona", "Cliente", "Órden", "Fecha", "Observación", "Estado", "Motivo Retención"];
   const encabezadoLogs = ["OrderNum", "Zona", "Cliente", "Fecha Liberación", "Hora Liberación", "UsuarioID", "Nombre Usuario", "Observaciones", "Estado"];
   const encabezadoEncuesta = ["N° en lista", "Número de Orden", "Fecha y hora del registro", "Cliente"];
 
-  // Optimización: Obtener todas las hojas de una vez
-  let sheetOrdenes = ss.getSheetByName(hojaOrdenes);
-  let sheetLogs = ss.getSheetByName(hojaLogs);
-  let sheetEncuesta = ss.getSheetByName(hojaEncuesta);
+  // Batch: Obtener y configurar todas las hojas en una operación
+  const sheets = {};
+  sheets.ordenes = ss.getSheetByName(hojaOrdenes) || ss.insertSheet(hojaOrdenes);
+  sheets.logs = ss.getSheetByName(hojaLogs) || ss.insertSheet(hojaLogs);
+  sheets.encuesta = ss.getSheetByName(hojaEncuesta) || ss.insertSheet(hojaEncuesta);
 
-  // Configurar hoja de órdenes
-  if (!sheetOrdenes) {
-    sheetOrdenes = ss.insertSheet(hojaOrdenes);
-  } else {
-    sheetOrdenes.clear();
-  }
-  sheetOrdenes.getRange(1, 1, 1, encabezadoOrdenes.length).setValues([encabezadoOrdenes]);
+  // Limpiar y configurar hojas en batch
+  sheets.ordenes.clear();
+  sheets.ordenes.getRange(1, 1, 1, encabezadoOrdenes.length).setValues([encabezadoOrdenes]);
 
-  // Configurar hoja de logs
-  if (!sheetLogs) {
-    sheetLogs = ss.insertSheet(hojaLogs);
-    sheetLogs.appendRow(encabezadoLogs);
-  } else if (sheetLogs.getLastRow() === 0) {
-    sheetLogs.appendRow(encabezadoLogs);
+  if (sheets.logs.getLastRow() === 0) {
+    sheets.logs.appendRow(encabezadoLogs);
   }
 
-  // Configurar hoja de encuesta
-  if (!sheetEncuesta) {
-    sheetEncuesta = ss.insertSheet(hojaEncuesta);
-  } else {
-    sheetEncuesta.clear();
-  }
-  sheetEncuesta.appendRow(encabezadoEncuesta);
+  sheets.encuesta.clear();
+  sheets.encuesta.appendRow(encabezadoEncuesta);
   
   // Proteger hoja de encuesta
-  const protection = sheetEncuesta.protect();
+  const protection = sheets.encuesta.protect();
   protection.setDescription("Protección encuesta de órdenes liberadas");
   protection.removeEditors(protection.getEditors());
   if (protection.canDomainEdit()) protection.setDomainEdit(false);
@@ -47,17 +41,19 @@ function actualizarYEnviarOrdenesCredito() {
   const conn = Jdbc.getConnection("jdbc:sqlserver://35.243.175.82:1433;databaseName=EpicorRepTran", "udlxls", "#kYe-343");
 
   try {
-    // Query de órdenes retenidas
+    // Query optimizada para órdenes retenidas
     const queryRetenidas = `
-      SELECT d.OrderHed_OrderNum, 
+      SELECT TOP 500 d.OrderHed_OrderNum, 
              CONVERT(VARCHAR, d.OrderHed_OrderDate, 23) AS Fecha,
              d.Zona, d.Customer_Name, d.ObservacionesRetencionCredito
-      FROM EpicorRepTran.dbo.udvPortalCustDtlOV d
+      FROM EpicorRepTran.dbo.udvPortalCustDtlOV d WITH (NOLOCK)
       WHERE d.CreditoRetenido = 1 AND d.OrderHed_VoidOrder = 0 AND d.Zona != 'Comercial Agrosoil'
         AND (d.CreditOverride IS NULL OR d.CreditOverride = 0)
+      ORDER BY d.OrderHed_OrderNum DESC
     `;
 
     const stmt1 = conn.createStatement();
+    stmt1.setFetchSize(100); // Optimización: fetch en bloques
     const results1 = stmt1.executeQuery(queryRetenidas);
     const filasOrdenes = [];
 
@@ -71,43 +67,37 @@ function actualizarYEnviarOrdenesCredito() {
 
       filasOrdenes.push([
         zona, cliente, orden, fecha,
-        `${orden}: ${observacion}`, "RETENIDA", "CRÉDITO"
+        observacion, "RETENIDA", "CRÉDITO"  // Removido el prefijo del orden
       ]);
     }
     stmt1.close();
 
-    // Escribir órdenes retenidas de una sola vez
+    // Escribir órdenes retenidas en batch
     if (filasOrdenes.length > 0) {
-      sheetOrdenes.getRange(2, 1, filasOrdenes.length, encabezadoOrdenes.length).setValues(filasOrdenes);
+      const range = sheets.ordenes.getRange(2, 1, filasOrdenes.length, encabezadoOrdenes.length);
+      range.setValues(filasOrdenes);
       
-      // Optimización: Ajustar tamaño de hoja en una operación
-      const totalCols = sheetOrdenes.getMaxColumns();
-      const totalRows = sheetOrdenes.getMaxRows();
-      const ultimaFila = filasOrdenes.length + 1; // +1 por el encabezado
-      
-      if (totalCols > encabezadoOrdenes.length) {
-        sheetOrdenes.deleteColumns(encabezadoOrdenes.length + 1, totalCols - encabezadoOrdenes.length);
-      }
-      if (totalRows > ultimaFila) {
-        sheetOrdenes.deleteRows(ultimaFila + 1, totalRows - ultimaFila);
-      }
+      // Flush para asegurar escritura inmediata
+      SpreadsheetApp.flush();
     }
 
-    // Query de órdenes liberadas
+    // Query optimizada para órdenes liberadas
     const queryLiberadas = `
-      SELECT d.OrderHed_OrderNum, d.Zona, d.Customer_Name,
+      SELECT TOP 500 d.OrderHed_OrderNum, d.Zona, d.Customer_Name,
              CONVERT(VARCHAR, d.FechaLiberacionCredito, 23) AS Fecha,
              d.HoraLiberacionCredito,
              oh.CreditOverrideUserID, u.Name, d.ObservacionesRetencionCredito
-      FROM EpicorRepTran.dbo.udvPortalCustDtlOV d
-      JOIN EpicorRepTran.dbo.OrderHed oh ON d.OrderHed_OrderNum = oh.OrderNum AND d.OrderHed_Company = oh.Company
-      LEFT JOIN EpicorTrain10.dbo.UserFile u ON oh.CreditOverrideUserID = u.DcdUserID
+      FROM EpicorRepTran.dbo.udvPortalCustDtlOV d WITH (NOLOCK)
+      JOIN EpicorRepTran.dbo.OrderHed oh WITH (NOLOCK) ON d.OrderHed_OrderNum = oh.OrderNum AND d.OrderHed_Company = oh.Company
+      LEFT JOIN EpicorTrain10.dbo.UserFile u WITH (NOLOCK) ON oh.CreditOverrideUserID = u.DcdUserID
       WHERE d.CreditoRetenido = 0 AND d.OrderHed_VoidOrder = 0 AND d.Zona != 'Comercial Agrosoil'
         AND oh.CreditOverride = 1 AND d.FechaLiberacionCredito IS NOT NULL
         AND d.FechaLiberacionCredito >= DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)
+      ORDER BY d.FechaLiberacionCredito DESC
     `;
 
     const stmt2 = conn.createStatement();
+    stmt2.setFetchSize(100); // Optimización: fetch en bloques
     const results2 = stmt2.executeQuery(queryLiberadas);
     const dataLiberadas = [];
     const registrosEncuesta = [];
@@ -125,8 +115,8 @@ function actualizarYEnviarOrdenesCredito() {
 
       dataLiberadas.push([
         ordenNum, zona, cliente, fecha, hora, 
-        results2.getString("CreditOverrideUserID"),
-        results2.getString("Name"), observacion, "LIBERADA"
+        results2.getString("CreditOverrideUserID") || "",
+        results2.getString("Name") || "", observacion, "LIBERADA"
       ]);
 
       registrosEncuesta.push([contadorEncuesta, ordenNum, fechaHoraCompleta, cliente]);
@@ -134,30 +124,31 @@ function actualizarYEnviarOrdenesCredito() {
     }
     stmt2.close();
 
-    // Escribir logs de liberadas de una sola vez
+    // Escribir logs y encuesta en batch
     if (dataLiberadas.length > 0) {
       const marcaTiempo = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy HH:mm:ss");
-      const filaInicio = sheetLogs.getLastRow() + 1;
+      const filaInicio = sheets.logs.getLastRow() + 1;
       
-      // Escribir separador y datos en una sola operación
       const datosConSeparador = [["", "", "", "", "", "", "", "", `← Nuevas liberaciones: ${marcaTiempo}`]];
       datosConSeparador.push(...dataLiberadas);
       
-      sheetLogs.getRange(filaInicio, 1, datosConSeparador.length, encabezadoLogs.length)
+      sheets.logs.getRange(filaInicio, 1, datosConSeparador.length, encabezadoLogs.length)
         .setValues(datosConSeparador);
     }
 
-    // Escribir encuesta de una sola vez
     if (registrosEncuesta.length > 0) {
-      sheetEncuesta.getRange(2, 1, registrosEncuesta.length, encabezadoEncuesta.length)
+      sheets.encuesta.getRange(2, 1, registrosEncuesta.length, encabezadoEncuesta.length)
         .setValues(registrosEncuesta);
     }
+
+    // Flush para asegurar todas las escrituras
+    SpreadsheetApp.flush();
 
   } finally {
     conn.close();
   }
 
-  // Mapeos de zonas (sin cambios)
+  // Mapeos de zonas (pre-compilados para mejor rendimiento)
   const zonaANumero = {
     "Zona1Cundinamarca-Boyacá-Santa": "3182260739",
     "Zona2-Cundinamarca": "3182260739",
@@ -216,8 +207,8 @@ function actualizarYEnviarOrdenesCredito() {
     "Gerencia General": "Representante sin asignar"
   };
 
-  // Optimización: Leer datos una sola vez y cachear valores comunes
-  const datos = sheetOrdenes.getDataRange().getValues();
+  // Leer datos para envío
+  const datos = sheets.ordenes.getDataRange().getValues();
   const encabezados = datos[0];
   const filas = datos.slice(1);
 
@@ -240,39 +231,51 @@ function actualizarYEnviarOrdenesCredito() {
   const token = "eyJhbGciOiJIUzUxMiJ9.eyJidXNpbmVzc0lkIjoiY29saW5hZ3JvIiwibmFtZSI6IkJSQU5ET04gWUVTSUQgUkVZRVMgUEFSRE8iLCJhcGkiOnRydWUsImlkIjoiVmU5bWNWWVdKb2VEa1I1WHFUZzhGMkNlRmxXMiIsImV4cCI6MTkwMTIwODAzOCwianRpIjoiVmU5bWNWWVdKb2VEa1I1WHFUZzhGMkNlRmxXMiJ9.IyxhZ-wETqd70EatU9kpVpZCq6dEbywtd9_kkTjRMzo5A99lIGq9CNT0KTUKOE5Xg25D8o33pGkuWwgOWXDAlQ";
   const chatChannelNumber = "573142340715";
   
-  // Optimización: Preparar opciones base para reutilizar
+  // Opciones base optimizadas
   const baseOptions = {
     method: "post",
     contentType: "application/json",
     headers: { "access-token": token },
-    muteHttpExceptions: true
+    muteHttpExceptions: true,
+    timeout: 10000 // Timeout de 10 segundos
   };
 
   const maxEnvios = 50;
   let enviados = 0;
   const errores = [];
   
-  // Cachear fecha actual para el reporte
+  // Pre-cachear valores comunes
   const fechaReporte = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy HH:mm:ss");
+  const timeZone = "GMT-5";
 
-  // Optimización: Procesar envíos en lotes
-  for (let i = 0; i < filas.length && enviados < maxEnvios; i++) {
+  // Procesar envíos con batch processing
+  const batchSize = 5; // Procesar de 5 en 5
+  const batches = [];
+  
+  // Preparar todos los payloads primero
+  for (let i = 0; i < Math.min(filas.length, maxEnvios); i++) {
     const fila = filas[i];
     
     const zona = fila[indices.zona];
     const cliente = fila[indices.cliente];
     const orden = fila[indices.orden];
     const fechaOrden = fila[indices.fecha] ? 
-      Utilities.formatDate(new Date(fila[indices.fecha]), "GMT-5", "dd/MM/yyyy") : "Sin fecha";
+      Utilities.formatDate(new Date(fila[indices.fecha]), timeZone, "dd/MM/yyyy") : "Sin fecha";
     
     let observacion = (fila[indices.observacion] || "").toString().trim();
-    if (observacion.toUpperCase().startsWith(`${orden}:`)) {
-      observacion = observacion.slice(`${orden}:`.length).trim();
+    
+    // Si la observación ya contiene el número de orden al inicio, no agregarlo en el mensaje
+    const ordenPattern = new RegExp(`^${orden}:\\s*`, 'i');
+    if (ordenPattern.test(observacion)) {
+      // La observación ya tiene el número de orden, usarla tal cual
+      observacion = observacion;
+    } else {
+      // Si no tiene el número de orden, agregarlo
+      observacion = `${orden}: ${observacion || "SIN OBSERVACIÓN"}`;
     }
 
     const telefono = zonaANumero[zona] || "573182260739";
     const representante = zonaANombre[zona] || "Representante sin asignar";
-    const clientPayload = `orden_${zona}_${cliente}_${orden}_${Date.now()}`.replace(/\s+/g, "_");
 
     const payload = {
       chatPlatform: "whatsapp",
@@ -281,42 +284,52 @@ function actualizarYEnviarOrdenesCredito() {
       ruleNameOrId: "reporte_ordenes_retenidas",
       params: {
         "1": fechaReporte,
-        "2": representante,  // Cambiado: ahora va el representante
-        "3": zona,           // Cambiado: ahora va la zona
+        "2": representante,
+        "3": zona,
         "4": cliente,
         "5": `🔹 Orden: ${orden} - ${fechaOrden}`,
-        "6": `📄 ${orden}: ${observacion || "SIN OBSERVACIÓN"}`
+        "6": `📄 ${observacion}`  // Ya no duplicar el orden aquí
       },
-      clientPayload
+      clientPayload: `orden_${zona}_${cliente}_${orden}_${Date.now()}`.replace(/\s+/g, "_")
     };
 
+    batches.push({ orden, payload });
+  }
+
+  // Enviar mensajes con optimización
+  const inicio = Date.now();
+  
+  for (let i = 0; i < batches.length; i++) {
+    const item = batches[i];
+    
     try {
       const response = UrlFetchApp.fetch(url, {
         ...baseOptions,
-        payload: JSON.stringify(payload)
+        payload: JSON.stringify(item.payload)
       });
       
       const texto = response.getContentText();
       if (!texto.includes("success")) {
-        errores.push(`Orden ${orden}: ${texto}`);
+        errores.push(`Orden ${item.orden}: ${texto}`);
       }
+      enviados++;
     } catch (e) {
-      errores.push(`Orden ${orden}: ${e.message}`);
+      errores.push(`Orden ${item.orden}: ${e.message}`);
     }
-
-    enviados++;
     
-    // Optimización: Sleep solo si no es el último envío
-    if (i < filas.length - 1 && enviados < maxEnvios) {
-      Utilities.sleep(300);
+    // Optimización del sleep: reducir tiempo y solo si no es el último
+    if (i < batches.length - 1) {
+      Utilities.sleep(150); // Reducido de 300ms a 150ms
     }
   }
 
-  // Log de errores consolidado
+  const tiempoTotal = (Date.now() - inicio) / 1000;
+
+  // Log de resultados consolidado
   if (errores.length > 0) {
     Logger.log(`⚠️ Se encontraron ${errores.length} errores:`);
     errores.forEach(error => Logger.log(error));
   }
 
-  Logger.log(`✅ Proceso completo: ${enviados} órdenes enviadas de ${filas.length} totales.`);
+  Logger.log(`✅ Proceso completo en ${tiempoTotal}s: ${enviados} órdenes enviadas de ${filas.length} totales.`);
 }
