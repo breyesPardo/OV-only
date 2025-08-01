@@ -1,0 +1,658 @@
+// ================== FUNCIONES DE CONFIGURACIÓN DE TRIGGERS ==================
+
+function configurarTriggersDiarios() {
+  // Eliminar triggers existentes para evitar duplicados
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'ejecutarReporteDiario' || 
+        trigger.getHandlerFunction() === 'verificarCambiosOrdenes') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  // Crear trigger para ejecutar a las 7:00 AM cada día
+  ScriptApp.newTrigger('ejecutarReporteDiario')
+    .timeBased()
+    .atHour(7)
+    .everyDays(1)
+    .create();
+    
+  // Crear trigger para verificar cambios cada hora entre 8 AM y 6 PM
+  ScriptApp.newTrigger('verificarCambiosOrdenes')
+    .timeBased()
+    .everyHours(1)
+    .create();
+    
+  SpreadsheetApp.getUi().alert('✅ Triggers configurados correctamente:\n- Reporte diario: 7:00 AM\n- Verificación de cambios: Cada hora (8 AM - 6 PM)');
+}
+
+function ejecutarReporteDiario() {
+  // Este es el reporte principal del día - envía todas las órdenes retenidas
+  Logger.log("=== EJECUTANDO REPORTE DIARIO ===");
+  actualizarYEnviarOrdenesCredito(true); // true = es reporte diario
+}
+
+function verificarCambiosOrdenes() {
+  // Esta función verifica cambios durante el día
+  const hora = new Date().getHours();
+  if (hora >= 8 && hora <= 18) { // Solo entre 8 AM y 6 PM
+    Logger.log("=== VERIFICANDO CAMBIOS DE ESTADO ===");
+    actualizarYEnviarOrdenesCredito(false); // false = verificación de cambios
+  }
+}
+
+// ================== FUNCIÓN PRINCIPAL MEJORADA ==================
+
+function actualizarYEnviarOrdenesCredito(esReporteDiario = true) {
+  const hojaOrdenes = "OrdenesRetenidas";
+  const hojaLogs = "LogsLiberaciones";
+  const hojaEncuesta = "EncuestaOrdenes";
+  const hojaControl = "ControlEnvios"; // Nueva hoja de control
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // Eliminar hoja TrazabilidadEnvios si existe
+  const hojaTrazabilidad = ss.getSheetByName("TrazabilidadEnvios");
+  if (hojaTrazabilidad) {
+    ss.deleteSheet(hojaTrazabilidad);
+  }
+
+  const encabezadoOrdenes = ["Zona", "Cliente", "Órden", "Fecha", "Observación", "Estado", "Motivo Retención"];
+  const encabezadoLogs = ["OrderNum", "Zona", "Cliente", "Fecha Liberación", "Hora Liberación", "UsuarioID", "Nombre Usuario", "Observaciones", "Estado"];
+  const encabezadoEncuesta = ["N° en lista", "Número de Orden", "Fecha y hora del registro", "Cliente"];
+  const encabezadoControl = ["Orden", "Estado", "Fecha Ultimo Envio", "Hora Ultimo Envio", "Tipo Mensaje", "Enviado Hoy Retenida", "Enviado Hoy Liberada", "Hash Datos"];
+
+  // Batch: Obtener y configurar todas las hojas en una operación
+  const sheets = {};
+  sheets.ordenes = ss.getSheetByName(hojaOrdenes) || ss.insertSheet(hojaOrdenes);
+  sheets.logs = ss.getSheetByName(hojaLogs) || ss.insertSheet(hojaLogs);
+  sheets.encuesta = ss.getSheetByName(hojaEncuesta) || ss.insertSheet(hojaEncuesta);
+  sheets.control = ss.getSheetByName(hojaControl) || ss.insertSheet(hojaControl);
+
+  // Configurar hoja de control si es nueva
+  if (sheets.control.getLastRow() === 0) {
+    sheets.control.appendRow(encabezadoControl);
+  }
+
+  // Limpiar y configurar hojas en batch
+  sheets.ordenes.clear();
+  sheets.ordenes.getRange(1, 1, 1, encabezadoOrdenes.length).setValues([encabezadoOrdenes]);
+
+  // Configurar hoja de logs - NO ELIMINAR REGISTROS, mantener todos permanentemente
+  if (sheets.logs.getLastRow() === 0) {
+    sheets.logs.appendRow(encabezadoLogs);
+  }
+  // NO se eliminan registros antiguos - se mantiene toda la trazabilidad histórica
+
+  sheets.encuesta.clear();
+  sheets.encuesta.appendRow(encabezadoEncuesta);
+  
+  // Proteger hoja de encuesta
+  const protection = sheets.encuesta.protect();
+  protection.setDescription("Protección encuesta de órdenes liberadas");
+  protection.removeEditors(protection.getEditors());
+  if (protection.canDomainEdit()) protection.setDomainEdit(false);
+
+  // Cargar datos de control existentes
+  const controlData = {};
+  const hoy = new Date();
+  const fechaHoy = Utilities.formatDate(hoy, Session.getScriptTimeZone(), "yyyy-MM-dd");
+  
+  if (sheets.control.getLastRow() > 1) {
+    const datosControl = sheets.control.getDataRange().getValues();
+    for (let i = 1; i < datosControl.length; i++) {
+      const [orden, estado, fechaEnvio, horaEnvio, tipoMensaje, enviadoHoyRetenida, enviadoHoyLiberada, hashDatos] = datosControl[i];
+      
+      // Resetear flags de "enviado hoy" si es un nuevo día
+      const enviadoRetenida = (fechaEnvio === fechaHoy) ? enviadoHoyRetenida : false;
+      const enviadoLiberada = (fechaEnvio === fechaHoy) ? enviadoHoyLiberada : false;
+      
+      controlData[orden] = { 
+        estado, 
+        fechaEnvio, 
+        horaEnvio, 
+        tipoMensaje, 
+        enviadoHoyRetenida: enviadoRetenida,
+        enviadoHoyLiberada: enviadoLiberada,
+        hashDatos,
+        fila: i + 1 
+      };
+    }
+  }
+
+  // Conexión a base de datos
+  const conn = Jdbc.getConnection("jdbc:sqlserver://35.243.175.82:1433;databaseName=EpicorRepTran", "udlxls", "#kYe-343");
+
+  // Maps para tracking de estados
+  const ordenesRetenidasActuales = new Map();
+  const ordenesLiberadasActuales = new Set();
+
+  try {
+    // Query para órdenes retenidas - sin límite TOP para traer todas
+    const queryRetenidas = `
+      SELECT d.OrderHed_OrderNum, 
+             CONVERT(VARCHAR, d.OrderHed_OrderDate, 23) AS Fecha,
+             d.Zona, d.Customer_Name, d.ObservacionesRetencionCredito
+      FROM EpicorRepTran.dbo.udvPortalCustDtlOV d WITH (NOLOCK)
+      WHERE d.CreditoRetenido = 1 AND d.OrderHed_VoidOrder = 0 AND d.Zona != 'Comercial Agrosoil'
+        AND (d.CreditOverride IS NULL OR d.CreditOverride = 0)
+      ORDER BY d.OrderHed_OrderNum DESC
+    `;
+
+    const stmt1 = conn.createStatement();
+    stmt1.setFetchSize(100); // Optimización: fetch en bloques
+    const results1 = stmt1.executeQuery(queryRetenidas);
+    const filasOrdenes = [];
+    const ordenesVistas = new Set(); // Para evitar duplicados
+
+    // Procesar órdenes retenidas
+    while (results1.next()) {
+      const zona = results1.getString("Zona");
+      const cliente = results1.getString("Customer_Name");
+      const orden = results1.getString("OrderHed_OrderNum");
+      
+      // Evitar duplicados
+      if (ordenesVistas.has(orden)) {
+        continue;
+      }
+      ordenesVistas.add(orden);
+      
+      let fecha = results1.getString("Fecha");
+      
+      // Corregir año si la fecha es futura
+      if (fecha) {
+        const fechaObj = new Date(fecha);
+        const hoy = new Date();
+        
+        // Si la fecha es futura (año 2025), cambiar a 2024
+        if (fechaObj.getFullYear() === 2025) {
+          fechaObj.setFullYear(2024);
+          fecha = Utilities.formatDate(fechaObj, "GMT-5", "yyyy-MM-dd");
+        }
+      }
+      
+      const observacion = (results1.getString("ObservacionesRetencionCredito") || "SIN OBSERVACIONES REGISTRADAS").toUpperCase();
+
+      filasOrdenes.push([
+        zona, cliente, orden, fecha,
+        `${orden}: ${observacion}`, "RETENIDA", "CRÉDITO"
+      ]);
+      
+      // Guardar para verificar cambios
+      ordenesRetenidasActuales.set(orden, {
+        zona, cliente, fecha, observacion,
+        hash: Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, 
+          `${zona}|${cliente}|${orden}|${fecha}|${observacion}`).toString()
+      });
+    }
+    stmt1.close();
+    
+    Logger.log(`Total de órdenes retenidas procesadas: ${ordenesVistas.size} órdenes únicas`);
+
+    // Escribir órdenes retenidas en batch
+    if (filasOrdenes.length > 0) {
+      const range = sheets.ordenes.getRange(2, 1, filasOrdenes.length, encabezadoOrdenes.length);
+      range.setValues(filasOrdenes);
+      
+      // Ajustar tamaño de la hoja
+      const totalCols = sheets.ordenes.getMaxColumns();
+      if (totalCols > encabezadoOrdenes.length) {
+        sheets.ordenes.deleteColumns(encabezadoOrdenes.length + 1, totalCols - encabezadoOrdenes.length);
+      }
+      
+      const totalRows = sheets.ordenes.getMaxRows();
+      const ultimaFila = filasOrdenes.length + 1; // +1 por el encabezado
+      if (totalRows > ultimaFila) {
+        sheets.ordenes.deleteRows(ultimaFila + 1, totalRows - ultimaFila);
+      }
+      
+      // Flush para asegurar escritura inmediata
+      SpreadsheetApp.flush();
+    }
+
+    // Query para órdenes liberadas - MODIFICADO PARA TRAER DESDE EL 1 DE JULIO DE 2025
+    const queryLiberadas = `
+      SELECT d.OrderHed_OrderNum, d.Zona, d.Customer_Name,
+             CONVERT(VARCHAR, d.FechaLiberacionCredito, 23) AS Fecha,
+             d.HoraLiberacionCredito,
+             oh.CreditOverrideUserID, u.Name, d.ObservacionesRetencionCredito
+      FROM EpicorRepTran.dbo.udvPortalCustDtlOV d WITH (NOLOCK)
+      JOIN EpicorRepTran.dbo.OrderHed oh WITH (NOLOCK) ON d.OrderHed_OrderNum = oh.OrderNum AND d.OrderHed_Company = oh.Company
+      LEFT JOIN EpicorTrain10.dbo.UserFile u WITH (NOLOCK) ON oh.CreditOverrideUserID = u.DcdUserID
+      WHERE d.CreditoRetenido = 0 AND d.OrderHed_VoidOrder = 0 AND d.Zona != 'Comercial Agrosoil'
+        AND oh.CreditOverride = 1 AND d.FechaLiberacionCredito IS NOT NULL
+        AND d.FechaLiberacionCredito >= '2025-07-01'
+      ORDER BY d.FechaLiberacionCredito DESC
+    `;
+
+    const stmt2 = conn.createStatement();
+    stmt2.setFetchSize(100);
+    const results2 = stmt2.executeQuery(queryLiberadas);
+    const dataLiberadas = [];
+    const registrosEncuesta = [];
+    let contadorEncuesta = 100;
+
+    // Procesar órdenes liberadas
+    while (results2.next()) {
+      const ordenNum = results2.getString("OrderHed_OrderNum");
+      const zona = results2.getString("Zona");
+      const cliente = results2.getString("Customer_Name");
+      const fecha = results2.getString("Fecha") || "";
+      const hora = results2.getString("HoraLiberacionCredito") || "";
+      const fechaHoraCompleta = fecha ? `${fecha} ${hora}` : "";
+      const observacion = (results2.getString("ObservacionesRetencionCredito") || "SIN OBSERVACIONES REGISTRADAS").toUpperCase();
+
+      dataLiberadas.push([
+        ordenNum, zona, cliente, fecha, hora, 
+        results2.getString("CreditOverrideUserID") || "",
+        results2.getString("Name") || "", observacion, "LIBERADA"
+      ]);
+
+      registrosEncuesta.push([contadorEncuesta, ordenNum, fechaHoraCompleta, cliente]);
+      contadorEncuesta += 100;
+      
+      ordenesLiberadasActuales.add(ordenNum);
+    }
+    stmt2.close();
+
+    // Escribir logs y encuesta en batch
+    if (dataLiberadas.length > 0) {
+      const marcaTiempo = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy HH:mm:ss");
+      const filaInicio = sheets.logs.getLastRow() + 1;
+      
+      const datosConSeparador = [["", "", "", "", "", "", "", "", `← Nuevas liberaciones: ${marcaTiempo}`]];
+      datosConSeparador.push(...dataLiberadas);
+      
+      sheets.logs.getRange(filaInicio, 1, datosConSeparador.length, encabezadoLogs.length)
+        .setValues(datosConSeparador);
+    }
+
+    if (registrosEncuesta.length > 0) {
+      sheets.encuesta.getRange(2, 1, registrosEncuesta.length, encabezadoEncuesta.length)
+        .setValues(registrosEncuesta);
+    }
+
+    // Flush para asegurar todas las escrituras
+    SpreadsheetApp.flush();
+
+  } finally {
+    conn.close();
+  }
+
+  // ================== LÓGICA DE CONTROL DE ENVÍOS ==================
+  
+  const ordenesParaEnviar = [];
+  const horaActual = Utilities.formatDate(hoy, Session.getScriptTimeZone(), "HH:mm:ss");
+  
+  // 1. Verificar órdenes retenidas
+  for (const [orden, datos] of ordenesRetenidasActuales) {
+    const control = controlData[orden];
+    let debeEnviar = false;
+    let tipoMensaje = '';
+    let mensajeExtra = '';
+    
+    if (!control) {
+      // Orden nueva - siempre enviar
+      debeEnviar = true;
+      tipoMensaje = 'NUEVA_RETENIDA';
+      mensajeExtra = '🆕 NUEVA ORDEN RETENIDA';
+    } else if (control.estado === 'LIBERADA') {
+      // Orden que volvió a estar retenida
+      if (!control.enviadoHoyRetenida) {
+        debeEnviar = true;
+        tipoMensaje = 'VOLVIO_RETENIDA';
+        mensajeExtra = '⚠️ ORDEN VOLVIÓ A RETENCIÓN';
+      }
+    } else if (esReporteDiario && !control.enviadoHoyRetenida) {
+      // Reporte diario - enviar todas las no enviadas hoy
+      debeEnviar = true;
+      tipoMensaje = 'REPORTE_DIARIO';
+      mensajeExtra = '📊 REPORTE DIARIO';
+    }
+    
+    if (debeEnviar) {
+      ordenesParaEnviar.push({
+        orden,
+        tipo: tipoMensaje,
+        datos,
+        mensaje: mensajeExtra,
+        esLiberada: false
+      });
+    }
+  }
+  
+  // 2. Verificar órdenes que se liberaron
+  for (const orden of ordenesLiberadasActuales) {
+    const control = controlData[orden];
+    
+    if (control && control.estado === 'RETENIDA' && !control.enviadoHoyLiberada) {
+      // Buscar datos de la orden en los logs
+      const datosLogs = sheets.logs.getDataRange().getValues();
+      let datosOrden = null;
+      
+      for (let i = datosLogs.length - 1; i >= 1; i--) {
+        if (datosLogs[i][0] === orden) {
+          datosOrden = {
+            zona: datosLogs[i][1],
+            cliente: datosLogs[i][2],
+            fecha: datosLogs[i][3],
+            observacion: datosLogs[i][7]
+          };
+          break;
+        }
+      }
+      
+      if (datosOrden) {
+        ordenesParaEnviar.push({
+          orden,
+          tipo: 'LIBERADA',
+          datos: datosOrden,
+          mensaje: '✅ ORDEN LIBERADA',
+          esLiberada: true
+        });
+      }
+    }
+  }
+
+  // ================== ENVÍO DE ÓRDENES POR WHATSAPP ==================
+  
+  // Mapeos de zonas
+  const zonaANumero = {
+    "Zona1Cundinamarca-Boyacá-Santa": "3182260739",
+    "Zona2-Cundinamarca": "3182260739",
+    "Zona3-Boyacá": "3182260739",
+    "Zona4-Santander-Cesar": "3182260739",
+    "Zona5-Norte de Santander": "3182260739",
+    "Zona6-Suroeste Antioqueño": "3182260739",
+    "Zona7-Oriente y Nte Antioquía": "3182260739",
+    "Zona8-Meta": "3182260739",
+    "Zona9-Casanaré": "3182260739",
+    "Zona10-Tolima Centro - Norte": "3182260739",
+    "Zona11-Tolima Sur y Oriente": "3182260739",
+    "Zona12-Huila Norte": "3182260739",
+    "Zona14-HuilaCentroSur-Caquetá": "3182260739",
+    "Zona15-Cauca": "3182260739",
+    "Zona16-Nariño": "3182260739",
+    "Zona17-Valle": "3182260739",
+    "Zona18-Eje Cafetero": "3182260739",
+    "Zona 19 Palma": "3182260739",
+    "Zona 20 Urabá": "3182260739",
+    "Zona 21 Caña": "3182260739",
+    "Zona 23 - Caribe seco": "3182260739",
+    "Zona 25 Flores": "3182260739",
+    "Ecuador": "3182260739",
+    "Licitaciones Colinagro": "3182260739",
+    "Bolivia": "3182260739",
+    "Gerencia General": "3182260739",
+    "Republica Dominicana": "3182260739"
+  };
+
+  const zonaANombre = {
+    "Zona1Cundinamarca-Boyacá-Santa": "Juan Camilo Gil Orjuela",
+    "Zona2-Cundinamarca": "Sergio Andres Rojas Sanchez",
+    "Zona3-Boyacá": "Yury Fonseca Patarroyo",
+    "Zona4-Santander-Cesar": "Oscar Fernando Chingate Cruz",
+    "Zona5-Norte de Santander": "Freddy Andres Bastianelli Fontana",
+    "Zona6-Suroeste Antioqueño": "Carlos Andres Arboleda Tabares",
+    "Zona7-Oriente y Nte Antioquía": "Rafael Leonardo Peña Sarmiento",
+    "Zona8-Meta": "Ximena Nathalia Nuñez Cruz",
+    "Zona9-Casanaré": "Angel Alonso Vasquez Morales",
+    "Zona10-Tolima Centro - Norte": "Assad Fraija Lopera",
+    "Zona11-Tolima Sur y Oriente": "Edna Liliana Portillo",
+    "Zona12-Huila Norte": "Domingo Jose Soto Martinez",
+    "Zona14-HuilaCentroSur-Caquetá": "Ivan Dario Lopez Rubio",
+    "Zona15-Cauca": "Claudia Patricia Ussa",
+    "Zona16-Nariño": "Carlos Alberto Castillo Ñañez",
+    "Zona17-Valle": "Diego Herney Guisa Velasquez",
+    "Zona18-Eje Cafetero": "Juan Pablo Londoño Aristizabal",
+    "Zona 19 Palma": "Juan Pablo Carranza",
+    "Zona 20 Urabá": "Gadelia Gliseth Gomez Gomez",
+    "Zona 21 Caña": "Juan Pablo Carranza",
+    "Zona 23 - Caribe seco": "Sandra Judith Castillo",
+    "Zona 25 Flores": "Javier Leonardo Erazo Velandia",
+    "Ecuador": "Sandra Valverde",
+    "Licitaciones Colinagro": "Sandra Valverde",
+    "Bolivia": "Representante sin asignar",
+    "Gerencia General": "Representante sin asignar",
+    "Republica Dominicana": "Representante sin asignar"
+  };
+
+  // Configuración de API
+  const url = "https://go.botmaker.com/api/v1.0/intent/v2";
+  const token = "eyJhbGciOiJIUzUxMiJ9.eyJidXNpbmVzc0lkIjoiY29saW5hZ3JvIiwibmFtZSI6IkJSQU5ET04gWUVTSUQgUkVZRVMgUEFSRE8iLCJhcGkiOnRydWUsImlkIjoiVmU5bWNWWVdKb2VEa1I1WHFUZzhGMkNlRmxXMiIsImV4cCI6MTkwMTIwODAzOCwianRpIjoiVmU5bWNWWVdKb2VEa1I1WHFUZzhGMkNlRmxXMiJ9.IyxhZ-wETqd70EatU9kpVpZCq6dEbywtd9_kkTjRMzo5A99lIGq9CNT0KTUKOE5Xg25D8o33pGkuWwgOWXDAlQ";
+  const chatChannelNumber = "573142340715";
+  
+  // Opciones base
+  const baseOptions = {
+    method: "post",
+    contentType: "application/json",
+    headers: { "access-token": token },
+    muteHttpExceptions: true
+  };
+
+  const maxEnvios = 200; // Límite de envíos por ejecución
+  let enviados = 0;
+  const errores = [];
+  const actualizacionesControl = [];
+  
+  // Pre-cachear valores comunes
+  const fechaReporte = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy HH:mm:ss");
+  const timeZone = "GMT-5";
+
+  // Procesar envíos
+  const inicio = Date.now();
+  
+  for (const ordenInfo of ordenesParaEnviar) {
+    if (enviados >= maxEnvios) break;
+    
+    const { orden, tipo, datos, mensaje, esLiberada } = ordenInfo;
+    const zona = datos.zona;
+    const cliente = datos.cliente;
+    const fecha = datos.fecha;
+    const observacion = datos.observacion || "SIN OBSERVACIÓN";
+    
+    const fechaOrden = fecha ? 
+      Utilities.formatDate(new Date(fecha), timeZone, "dd/MM/yyyy") : "Sin fecha";
+    
+    const telefono = "57" + (zonaANumero[zona] || "3182260739");
+    const representante = zonaANombre[zona] || "Representante sin asignar";
+    const clientPayload = `orden_${tipo}_${zona.replace(/\s+/g, "_")}_${cliente.replace(/\s+/g, "_")}_${orden}_${Date.now()}`;
+
+    const params = {
+      "1": fechaReporte,
+      "2": representante,
+      "3": zona,
+      "4": cliente,
+      "5": `${mensaje} 🔹 Orden: ${orden} - ${fechaOrden}`,
+      "6": `📄 ${orden}: ${observacion}`
+    };
+
+    const payload = {
+      chatPlatform: "whatsapp",
+      chatChannelNumber,
+      platformContactId: telefono,
+      ruleNameOrId: esLiberada ? "notificacion_orden_liberada" : "reporte_ordenes_retenidas",
+      params,
+      clientPayload
+    };
+
+    try {
+      const response = UrlFetchApp.fetch(url, {
+        ...baseOptions,
+        payload: JSON.stringify(payload)
+      });
+      
+      const texto = response.getContentText();
+      let resultado;
+      let exito = false;
+      
+      try {
+        const respuestaJson = JSON.parse(texto);
+        // Si tiene un ID y problems es null, fue exitoso
+        if (respuestaJson.id && respuestaJson.problems === null) {
+          resultado = "✅ Enviado";
+          exito = true;
+        } else if (texto.includes("success")) {
+          resultado = "✅ Enviado";
+          exito = true;
+        } else {
+          resultado = `⚠️ ${texto}`;
+          errores.push(`Orden ${orden}: ${texto}`);
+        }
+      } catch (e) {
+        // Si no es JSON válido, verificar si contiene "success"
+        resultado = texto.includes("success") ? "✅ Enviado" : `⚠️ ${texto}`;
+        exito = texto.includes("success");
+        if (!exito) {
+          errores.push(`Orden ${orden}: ${texto}`);
+        }
+      }
+      
+      if (exito) {
+        // Preparar actualización del control
+        actualizacionesControl.push({
+          orden,
+          estado: esLiberada ? 'LIBERADA' : 'RETENIDA',
+          fechaEnvio: fechaHoy,
+          horaEnvio: horaActual,
+          tipoMensaje: tipo,
+          enviadoHoyRetenida: !esLiberada,
+          enviadoHoyLiberada: esLiberada,
+          hashDatos: datos.hash || ''
+        });
+        enviados++;
+      }
+      
+      // Si es una orden retenida, actualizar la columna ResultadoEnvio
+      if (!esLiberada) {
+        const datosHoja = sheets.ordenes.getDataRange().getValues();
+        for (let i = 1; i < datosHoja.length; i++) {
+          if (datosHoja[i][2] === orden) { // Columna Órden
+            const numColumnas = datosHoja[0].length;
+            let colResultado = datosHoja[0].indexOf("ResultadoEnvio");
+            if (colResultado === -1) {
+              sheets.ordenes.getRange(1, numColumnas + 1).setValue("ResultadoEnvio");
+              colResultado = numColumnas;
+            }
+            sheets.ordenes.getRange(i + 1, colResultado + 1).setValue(resultado);
+            break;
+          }
+        }
+      }
+      
+    } catch (e) {
+      const errorMsg = `❌ Error: ${e.message}`;
+      errores.push(`Orden ${orden}: ${e.message}`);
+    }
+    
+    // Sleep entre mensajes - aumentado para evitar límites de rate
+    if (enviados < maxEnvios && ordenesParaEnviar.indexOf(ordenInfo) < ordenesParaEnviar.length - 1) {
+      Utilities.sleep(1000); // Aumentado a 1 segundo
+    }
+  }
+
+  // Actualizar hoja de control
+  for (const actualizacion of actualizacionesControl) {
+    const { orden, estado, fechaEnvio, horaEnvio, tipoMensaje, enviadoHoyRetenida, enviadoHoyLiberada, hashDatos } = actualizacion;
+    
+    if (controlData[orden] && controlData[orden].fila) {
+      // Actualizar registro existente
+      const filaControl = controlData[orden].fila;
+      const valoresActuales = sheets.control.getRange(filaControl, 1, 1, 8).getValues()[0];
+      
+      // Mantener el estado de enviado anterior si es necesario
+      const nuevaEnviadoRetenida = enviadoHoyRetenida || valoresActuales[5];
+      const nuevaEnviadoLiberada = enviadoHoyLiberada || valoresActuales[6];
+      
+      sheets.control.getRange(filaControl, 1, 1, 8)
+        .setValues([[orden, estado, fechaEnvio, horaEnvio, tipoMensaje, nuevaEnviadoRetenida, nuevaEnviadoLiberada, hashDatos]]);
+    } else {
+      // Agregar nuevo registro
+      sheets.control.appendRow([orden, estado, fechaEnvio, horaEnvio, tipoMensaje, enviadoHoyRetenida, enviadoHoyLiberada, hashDatos]);
+    }
+  }
+
+  const tiempoTotal = (Date.now() - inicio) / 1000;
+
+  // Log de resultados
+  Logger.log(`✅ Proceso completo en ${tiempoTotal}s`);
+  Logger.log(`📊 RESUMEN:`);
+  Logger.log(`- Tipo de ejecución: ${esReporteDiario ? 'REPORTE DIARIO' : 'VERIFICACIÓN DE CAMBIOS'}`);
+  Logger.log(`- Órdenes procesadas: ${enviados}`);
+  Logger.log(`- Total a enviar: ${ordenesParaEnviar.length}`);
+  Logger.log(`- Errores encontrados: ${errores.length}`);
+  
+  if (errores.length > 0) {
+    Logger.log(`⚠️ Detalle de errores:`);
+    errores.forEach(error => Logger.log(error));
+  }
+}
+
+// ================== FUNCIONES DE PRUEBA Y UTILIDADES ==================
+
+function probarSistemaCompleto() {
+  // Ejecutar como reporte diario
+  Logger.log("=== PRUEBA COMO REPORTE DIARIO ===");
+  actualizarYEnviarOrdenesCredito(true);
+  
+  Utilities.sleep(5000);
+  
+  // Ejecutar como verificación de cambios
+  Logger.log("=== PRUEBA COMO VERIFICACIÓN DE CAMBIOS ===");
+  actualizarYEnviarOrdenesCredito(false);
+}
+
+function resetearControlDelDia() {
+  // Función para resetear manualmente los envíos del día
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const hojaControl = ss.getSheetByName("ControlEnvios");
+  
+  if (hojaControl && hojaControl.getLastRow() > 1) {
+    const rango = hojaControl.getRange(2, 6, hojaControl.getLastRow() - 1, 2);
+    const valores = rango.getValues();
+    
+    for (let i = 0; i < valores.length; i++) {
+      valores[i][0] = false; // Enviado Hoy Retenida
+      valores[i][1] = false; // Enviado Hoy Liberada
+    }
+    
+    rango.setValues(valores);
+    SpreadsheetApp.getUi().alert('✅ Control del día reseteado');
+  }
+}
+
+function verEstadisticasEnvios() {
+  // Función para ver estadísticas de envíos
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const hojaControl = ss.getSheetByName("ControlEnvios");
+  
+  if (!hojaControl || hojaControl.getLastRow() <= 1) {
+    SpreadsheetApp.getUi().alert('No hay datos de control disponibles');
+    return;
+  }
+  
+  const datos = hojaControl.getDataRange().getValues();
+  const hoy = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+  
+  let totalOrdenes = datos.length - 1;
+  let enviadasHoyRetenida = 0;
+  let enviadasHoyLiberada = 0;
+  let retenidas = 0;
+  let liberadas = 0;
+  
+  for (let i = 1; i < datos.length; i++) {
+    if (datos[i][1] === 'RETENIDA') retenidas++;
+    if (datos[i][1] === 'LIBERADA') liberadas++;
+    if (datos[i][2] === hoy && datos[i][5]) enviadasHoyRetenida++;
+    if (datos[i][2] === hoy && datos[i][6]) enviadasHoyLiberada++;
+  }
+  
+  const mensaje = `📊 ESTADÍSTICAS DE ENVÍOS\n\n` +
+    `Total órdenes registradas: ${totalOrdenes}\n` +
+    `Actualmente retenidas: ${retenidas}\n` +
+    `Actualmente liberadas: ${liberadas}\n\n` +
+    `HOY (${hoy}):\n` +
+    `- Notificaciones de retención enviadas: ${enviadasHoyRetenida}\n` +
+    `- Notificaciones de liberación enviadas: ${enviadasHoyLiberada}`;
+  
+  SpreadsheetApp.getUi().alert(mensaje);
+}
