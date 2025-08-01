@@ -1,0 +1,335 @@
+function actualizarYEnviarOrdenesCredito() {
+  const hojaOrdenes = "OrdenesRetenidas";
+  const hojaLogs = "LogsLiberaciones";
+  const hojaEncuesta = "EncuestaOrdenes";
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // Eliminar hoja TrazabilidadEnvios si existe
+  const hojaTrazabilidad = ss.getSheetByName("TrazabilidadEnvios");
+  if (hojaTrazabilidad) {
+    ss.deleteSheet(hojaTrazabilidad);
+  }
+
+  const encabezadoOrdenes = ["Zona", "Cliente", "Órden", "Fecha", "Observación", "Estado", "Motivo Retención"];
+  const encabezadoLogs = ["OrderNum", "Zona", "Cliente", "Fecha Liberación", "Hora Liberación", "UsuarioID", "Nombre Usuario", "Observaciones", "Estado"];
+  const encabezadoEncuesta = ["N° en lista", "Número de Orden", "Fecha y hora del registro", "Cliente"];
+
+  // Batch: Obtener y configurar todas las hojas en una operación
+  const sheets = {};
+  sheets.ordenes = ss.getSheetByName(hojaOrdenes) || ss.insertSheet(hojaOrdenes);
+  sheets.logs = ss.getSheetByName(hojaLogs) || ss.insertSheet(hojaLogs);
+  sheets.encuesta = ss.getSheetByName(hojaEncuesta) || ss.insertSheet(hojaEncuesta);
+
+  // Limpiar y configurar hojas en batch
+  sheets.ordenes.clear();
+  sheets.ordenes.getRange(1, 1, 1, encabezadoOrdenes.length).setValues([encabezadoOrdenes]);
+
+  if (sheets.logs.getLastRow() === 0) {
+    sheets.logs.appendRow(encabezadoLogs);
+  }
+
+  sheets.encuesta.clear();
+  sheets.encuesta.appendRow(encabezadoEncuesta);
+  
+  // Proteger hoja de encuesta
+  const protection = sheets.encuesta.protect();
+  protection.setDescription("Protección encuesta de órdenes liberadas");
+  protection.removeEditors(protection.getEditors());
+  if (protection.canDomainEdit()) protection.setDomainEdit(false);
+
+  // Conexión a base de datos
+  const conn = Jdbc.getConnection("jdbc:sqlserver://35.243.175.82:1433;databaseName=EpicorRepTran", "udlxls", "#kYe-343");
+
+  try {
+    // Query optimizada para órdenes retenidas
+    const queryRetenidas = `
+      SELECT TOP 500 d.OrderHed_OrderNum, 
+             CONVERT(VARCHAR, d.OrderHed_OrderDate, 23) AS Fecha,
+             d.Zona, d.Customer_Name, d.ObservacionesRetencionCredito
+      FROM EpicorRepTran.dbo.udvPortalCustDtlOV d WITH (NOLOCK)
+      WHERE d.CreditoRetenido = 1 AND d.OrderHed_VoidOrder = 0 AND d.Zona != 'Comercial Agrosoil'
+        AND (d.CreditOverride IS NULL OR d.CreditOverride = 0)
+      ORDER BY d.OrderHed_OrderNum DESC
+    `;
+
+    const stmt1 = conn.createStatement();
+    stmt1.setFetchSize(100); // Optimización: fetch en bloques
+    const results1 = stmt1.executeQuery(queryRetenidas);
+    const filasOrdenes = [];
+
+    // Procesar órdenes retenidas
+    while (results1.next()) {
+      const zona = results1.getString("Zona");
+      const cliente = results1.getString("Customer_Name");
+      const orden = results1.getString("OrderHed_OrderNum");
+      const fecha = results1.getString("Fecha");
+      const observacion = (results1.getString("ObservacionesRetencionCredito") || "SIN OBSERVACIONES REGISTRADAS").toUpperCase();
+
+      filasOrdenes.push([
+        zona, cliente, orden, fecha,
+        observacion, "RETENIDA", "CRÉDITO"  // Removido el prefijo del orden
+      ]);
+    }
+    stmt1.close();
+
+    // Escribir órdenes retenidas en batch
+    if (filasOrdenes.length > 0) {
+      const range = sheets.ordenes.getRange(2, 1, filasOrdenes.length, encabezadoOrdenes.length);
+      range.setValues(filasOrdenes);
+      
+      // Flush para asegurar escritura inmediata
+      SpreadsheetApp.flush();
+    }
+
+    // Query optimizada para órdenes liberadas
+    const queryLiberadas = `
+      SELECT TOP 500 d.OrderHed_OrderNum, d.Zona, d.Customer_Name,
+             CONVERT(VARCHAR, d.FechaLiberacionCredito, 23) AS Fecha,
+             d.HoraLiberacionCredito,
+             oh.CreditOverrideUserID, u.Name, d.ObservacionesRetencionCredito
+      FROM EpicorRepTran.dbo.udvPortalCustDtlOV d WITH (NOLOCK)
+      JOIN EpicorRepTran.dbo.OrderHed oh WITH (NOLOCK) ON d.OrderHed_OrderNum = oh.OrderNum AND d.OrderHed_Company = oh.Company
+      LEFT JOIN EpicorTrain10.dbo.UserFile u WITH (NOLOCK) ON oh.CreditOverrideUserID = u.DcdUserID
+      WHERE d.CreditoRetenido = 0 AND d.OrderHed_VoidOrder = 0 AND d.Zona != 'Comercial Agrosoil'
+        AND oh.CreditOverride = 1 AND d.FechaLiberacionCredito IS NOT NULL
+        AND d.FechaLiberacionCredito >= DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)
+      ORDER BY d.FechaLiberacionCredito DESC
+    `;
+
+    const stmt2 = conn.createStatement();
+    stmt2.setFetchSize(100); // Optimización: fetch en bloques
+    const results2 = stmt2.executeQuery(queryLiberadas);
+    const dataLiberadas = [];
+    const registrosEncuesta = [];
+    let contadorEncuesta = 100;
+
+    // Procesar órdenes liberadas
+    while (results2.next()) {
+      const ordenNum = results2.getString("OrderHed_OrderNum");
+      const zona = results2.getString("Zona");
+      const cliente = results2.getString("Customer_Name");
+      const fecha = results2.getString("Fecha") || "";
+      const hora = results2.getString("HoraLiberacionCredito") || "";
+      const fechaHoraCompleta = fecha ? `${fecha} ${hora}` : "";
+      const observacion = (results2.getString("ObservacionesRetencionCredito") || "SIN OBSERVACIONES REGISTRADAS").toUpperCase();
+
+      dataLiberadas.push([
+        ordenNum, zona, cliente, fecha, hora, 
+        results2.getString("CreditOverrideUserID") || "",
+        results2.getString("Name") || "", observacion, "LIBERADA"
+      ]);
+
+      registrosEncuesta.push([contadorEncuesta, ordenNum, fechaHoraCompleta, cliente]);
+      contadorEncuesta += 100;
+    }
+    stmt2.close();
+
+    // Escribir logs y encuesta en batch
+    if (dataLiberadas.length > 0) {
+      const marcaTiempo = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy HH:mm:ss");
+      const filaInicio = sheets.logs.getLastRow() + 1;
+      
+      const datosConSeparador = [["", "", "", "", "", "", "", "", `← Nuevas liberaciones: ${marcaTiempo}`]];
+      datosConSeparador.push(...dataLiberadas);
+      
+      sheets.logs.getRange(filaInicio, 1, datosConSeparador.length, encabezadoLogs.length)
+        .setValues(datosConSeparador);
+    }
+
+    if (registrosEncuesta.length > 0) {
+      sheets.encuesta.getRange(2, 1, registrosEncuesta.length, encabezadoEncuesta.length)
+        .setValues(registrosEncuesta);
+    }
+
+    // Flush para asegurar todas las escrituras
+    SpreadsheetApp.flush();
+
+  } finally {
+    conn.close();
+  }
+
+  // Mapeos de zonas (pre-compilados para mejor rendimiento)
+  const zonaANumero = {
+    "Zona1Cundinamarca-Boyacá-Santa": "3182260739",
+    "Zona2-Cundinamarca": "3182260739",
+    "Zona3-Boyacá": "3182260739",
+    "Zona4-Santander-Cesar": "3182260739",
+    "Zona5-Norte de Santander": "3182260739",
+    "Zona6-Suroeste Antioqueño": "3182260739",
+    "Zona7-Oriente y Nte Antioquía": "3182260739",
+    "Zona8-Meta": "3182260739",
+    "Zona9-Casanaré": "3182260739",
+    "Zona10-Tolima Centro - Norte": "3182260739",
+    "Zona11-Tolima Sur y Oriente": "3182260739",
+    "Zona12-Huila Norte": "3182260739",
+    "Zona14-HuilaCentroSur-Caquetá": "3182260739",
+    "Zona15-Cauca": "3182260739",
+    "Zona16-Nariño": "3182260739",
+    "Zona17-Valle": "3182260739",
+    "Zona18-Eje Cafetero": "3182260739",
+    "Zona 19 Palma": "3182260739",
+    "Zona 20 Urabá": "3182260739",
+    "Zona 21 Caña": "3182260739",
+    "Zona 23 - Caribe seco": "3182260739",
+    "Zona 25 Flores": "3182260739",
+    "Ecuador": "3182260739",
+    "Licitaciones Colinagro": "3182260739",
+    "Bolivia": "3182260739",
+    "Gerencia General": "3182260739"
+  };
+
+  const zonaANombre = {
+    "Zona1Cundinamarca-Boyacá-Santa": "Juan Camilo Gil Orjuela",
+    "Zona2-Cundinamarca": "Sergio Andres Rojas Sanchez",
+    "Zona3-Boyacá": "Yury Fonseca Patarroyo",
+    "Zona4-Santander-Cesar": "Oscar Fernando Chingate Cruz",
+    "Zona5-Norte de Santander": "Freddy Andres Bastianelli Fontana",
+    "Zona6-Suroeste Antioqueño": "Carlos Andres Arboleda Tabares",
+    "Zona7-Oriente y Nte Antioquía": "Rafael Leonardo Peña Sarmiento",
+    "Zona8-Meta": "Ximena Nathalia Nuñez Cruz",
+    "Zona9-Casanaré": "Angel Alonso Vasquez Morales",
+    "Zona10-Tolima Centro - Norte": "Assad Fraija Lopera",
+    "Zona11-Tolima Sur y Oriente": "Edna Liliana Portillo",
+    "Zona12-Huila Norte": "Domingo Jose Soto Martinez",
+    "Zona14-HuilaCentroSur-Caquetá": "Ivan Dario Lopez Rubio",
+    "Zona15-Cauca": "Claudia Patricia Ussa",
+    "Zona16-Nariño": "Carlos Alberto Castillo Ñañez",
+    "Zona17-Valle": "Diego Herney Guisa Velasquez",
+    "Zona18-Eje Cafetero": "Juan Pablo Londoño Aristizabal",
+    "Zona 19 Palma": "Juan Pablo Carranza",
+    "Zona 20 Urabá": "Gadelia Gliseth Gomez Gomez",
+    "Zona 21 Caña": "Juan Pablo Carranza",
+    "Zona 23 - Caribe seco": "Sandra Judith Castillo",
+    "Zona 25 Flores": "Javier Leonardo Erazo Velandia",
+    "Ecuador": "Sandra Valverde",
+    "Licitaciones Colinagro": "Sandra Valverde",
+    "Bolivia": "Representante sin asignar",
+    "Gerencia General": "Representante sin asignar"
+  };
+
+  // Leer datos para envío
+  const datos = sheets.ordenes.getDataRange().getValues();
+  const encabezados = datos[0];
+  const filas = datos.slice(1);
+
+  if (filas.length === 0) {
+    Logger.log("No hay órdenes retenidas para enviar.");
+    return;
+  }
+
+  // Cachear índices de columnas
+  const indices = {
+    zona: encabezados.indexOf("Zona"),
+    cliente: encabezados.indexOf("Cliente"),
+    orden: encabezados.indexOf("Órden"),
+    fecha: encabezados.indexOf("Fecha"),
+    observacion: encabezados.indexOf("Observación")
+  };
+
+  // Configuración de API
+  const url = "https://go.botmaker.com/api/v1.0/intent/v2";
+  const token = "eyJhbGciOiJIUzUxMiJ9.eyJidXNpbmVzc0lkIjoiY29saW5hZ3JvIiwibmFtZSI6IkJSQU5ET04gWUVTSUQgUkVZRVMgUEFSRE8iLCJhcGkiOnRydWUsImlkIjoiVmU5bWNWWVdKb2VEa1I1WHFUZzhGMkNlRmxXMiIsImV4cCI6MTkwMTIwODAzOCwianRpIjoiVmU5bWNWWVdKb2VEa1I1WHFUZzhGMkNlRmxXMiJ9.IyxhZ-wETqd70EatU9kpVpZCq6dEbywtd9_kkTjRMzo5A99lIGq9CNT0KTUKOE5Xg25D8o33pGkuWwgOWXDAlQ";
+  const chatChannelNumber = "573142340715";
+  
+  // Opciones base optimizadas
+  const baseOptions = {
+    method: "post",
+    contentType: "application/json",
+    headers: { "access-token": token },
+    muteHttpExceptions: true,
+    timeout: 10000 // Timeout de 10 segundos
+  };
+
+  const maxEnvios = 50;
+  let enviados = 0;
+  const errores = [];
+  
+  // Pre-cachear valores comunes
+  const fechaReporte = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy HH:mm:ss");
+  const timeZone = "GMT-5";
+
+  // Procesar envíos con batch processing
+  const batchSize = 5; // Procesar de 5 en 5
+  const batches = [];
+  
+  // Preparar todos los payloads primero
+  for (let i = 0; i < Math.min(filas.length, maxEnvios); i++) {
+    const fila = filas[i];
+    
+    const zona = fila[indices.zona];
+    const cliente = fila[indices.cliente];
+    const orden = fila[indices.orden];
+    const fechaOrden = fila[indices.fecha] ? 
+      Utilities.formatDate(new Date(fila[indices.fecha]), timeZone, "dd/MM/yyyy") : "Sin fecha";
+    
+    let observacion = (fila[indices.observacion] || "").toString().trim();
+    
+    // Si la observación ya contiene el número de orden al inicio, no agregarlo en el mensaje
+    const ordenPattern = new RegExp(`^${orden}:\\s*`, 'i');
+    if (ordenPattern.test(observacion)) {
+      // La observación ya tiene el número de orden, usarla tal cual
+      observacion = observacion;
+    } else {
+      // Si no tiene el número de orden, agregarlo
+      observacion = `${orden}: ${observacion || "SIN OBSERVACIÓN"}`;
+    }
+
+    const telefono = zonaANumero[zona] || "573182260739";
+    const representante = zonaANombre[zona] || "Representante sin asignar";
+
+    const payload = {
+      chatPlatform: "whatsapp",
+      chatChannelNumber,
+      platformContactId: telefono,
+      ruleNameOrId: "reporte_ordenes_retenidas",
+      params: {
+        "1": fechaReporte,
+        "2": representante,
+        "3": zona,
+        "4": cliente,
+        "5": `🔹 Orden: ${orden} - ${fechaOrden}`,
+        "6": `📄 ${observacion}`  // Ya no duplicar el orden aquí
+      },
+      clientPayload: `orden_${zona}_${cliente}_${orden}_${Date.now()}`.replace(/\s+/g, "_")
+    };
+
+    batches.push({ orden, payload });
+  }
+
+  // Enviar mensajes con optimización
+  const inicio = Date.now();
+  
+  for (let i = 0; i < batches.length; i++) {
+    const item = batches[i];
+    
+    try {
+      const response = UrlFetchApp.fetch(url, {
+        ...baseOptions,
+        payload: JSON.stringify(item.payload)
+      });
+      
+      const texto = response.getContentText();
+      if (!texto.includes("success")) {
+        errores.push(`Orden ${item.orden}: ${texto}`);
+      }
+      enviados++;
+    } catch (e) {
+      errores.push(`Orden ${item.orden}: ${e.message}`);
+    }
+    
+    // Optimización del sleep: reducir tiempo y solo si no es el último
+    if (i < batches.length - 1) {
+      Utilities.sleep(150); // Reducido de 300ms a 150ms
+    }
+  }
+
+  const tiempoTotal = (Date.now() - inicio) / 1000;
+
+  // Log de resultados consolidado
+  if (errores.length > 0) {
+    Logger.log(`⚠️ Se encontraron ${errores.length} errores:`);
+    errores.forEach(error => Logger.log(error));
+  }
+
+  Logger.log(`✅ Proceso completo en ${tiempoTotal}s: ${enviados} órdenes enviadas de ${filas.length} totales.`);
+}
