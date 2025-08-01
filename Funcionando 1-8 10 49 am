@@ -24,8 +24,35 @@ function actualizarYEnviarOrdenesCredito() {
   sheets.ordenes.clear();
   sheets.ordenes.getRange(1, 1, 1, encabezadoOrdenes.length).setValues([encabezadoOrdenes]);
 
+  // Configurar hoja de logs - mantener registros del mes actual
   if (sheets.logs.getLastRow() === 0) {
     sheets.logs.appendRow(encabezadoLogs);
+  }
+  
+  // Limpiar registros antiguos (anteriores al mes actual)
+  if (sheets.logs.getLastRow() > 1) {
+    const datosLogs = sheets.logs.getDataRange().getValues();
+    const fechaInicioMes = new Date();
+    fechaInicioMes.setDate(1);
+    fechaInicioMes.setHours(0, 0, 0, 0);
+    
+    let filasAMantener = [datosLogs[0]]; // Mantener encabezado
+    
+    for (let i = 1; i < datosLogs.length; i++) {
+      const fechaLiberacion = datosLogs[i][3]; // Columna "Fecha Liberación"
+      if (fechaLiberacion && new Date(fechaLiberacion) >= fechaInicioMes) {
+        filasAMantener.push(datosLogs[i]);
+      }
+    }
+    
+    // Solo reescribir si hay cambios
+    if (filasAMantener.length !== datosLogs.length) {
+      sheets.logs.clear();
+      if (filasAMantener.length > 0) {
+        sheets.logs.getRange(1, 1, filasAMantener.length, encabezadoLogs.length)
+          .setValues(filasAMantener);
+      }
+    }
   }
 
   sheets.encuesta.clear();
@@ -41,9 +68,9 @@ function actualizarYEnviarOrdenesCredito() {
   const conn = Jdbc.getConnection("jdbc:sqlserver://35.243.175.82:1433;databaseName=EpicorRepTran", "udlxls", "#kYe-343");
 
   try {
-    // Query optimizada para órdenes retenidas
+    // Query para órdenes retenidas - sin límite TOP para traer todas
     const queryRetenidas = `
-      SELECT TOP 500 d.OrderHed_OrderNum, 
+      SELECT d.OrderHed_OrderNum, 
              CONVERT(VARCHAR, d.OrderHed_OrderDate, 23) AS Fecha,
              d.Zona, d.Customer_Name, d.ObservacionesRetencionCredito
       FROM EpicorRepTran.dbo.udvPortalCustDtlOV d WITH (NOLOCK)
@@ -56,34 +83,69 @@ function actualizarYEnviarOrdenesCredito() {
     stmt1.setFetchSize(100); // Optimización: fetch en bloques
     const results1 = stmt1.executeQuery(queryRetenidas);
     const filasOrdenes = [];
+    const ordenesVistas = new Set(); // Para evitar duplicados
 
     // Procesar órdenes retenidas
     while (results1.next()) {
       const zona = results1.getString("Zona");
       const cliente = results1.getString("Customer_Name");
       const orden = results1.getString("OrderHed_OrderNum");
-      const fecha = results1.getString("Fecha");
+      
+      // Evitar duplicados
+      if (ordenesVistas.has(orden)) {
+        continue;
+      }
+      ordenesVistas.add(orden);
+      
+      let fecha = results1.getString("Fecha");
+      
+      // Corregir año si la fecha es futura
+      if (fecha) {
+        const fechaObj = new Date(fecha);
+        const hoy = new Date();
+        
+        // Si la fecha es futura (año 2025), cambiar a 2024
+        if (fechaObj.getFullYear() === 2025) {
+          fechaObj.setFullYear(2024);
+          fecha = Utilities.formatDate(fechaObj, "GMT-5", "yyyy-MM-dd");
+        }
+      }
+      
       const observacion = (results1.getString("ObservacionesRetencionCredito") || "SIN OBSERVACIONES REGISTRADAS").toUpperCase();
 
       filasOrdenes.push([
         zona, cliente, orden, fecha,
-        observacion, "RETENIDA", "CRÉDITO"  // Removido el prefijo del orden
+        `${orden}: ${observacion}`, "RETENIDA", "CRÉDITO"
       ]);
     }
     stmt1.close();
+    
+    Logger.log(`Total de órdenes retenidas procesadas: ${ordenesVistas.size} órdenes únicas`);
 
     // Escribir órdenes retenidas en batch
     if (filasOrdenes.length > 0) {
       const range = sheets.ordenes.getRange(2, 1, filasOrdenes.length, encabezadoOrdenes.length);
       range.setValues(filasOrdenes);
       
+      // Ajustar tamaño de la hoja
+      const totalCols = sheets.ordenes.getMaxColumns();
+      if (totalCols > encabezadoOrdenes.length) {
+        sheets.ordenes.deleteColumns(encabezadoOrdenes.length + 1, totalCols - encabezadoOrdenes.length);
+      }
+      
+      const totalRows = sheets.ordenes.getMaxRows();
+      const ultimaFila = filasOrdenes.length + 1; // +1 por el encabezado
+      if (totalRows > ultimaFila) {
+        sheets.ordenes.deleteRows(ultimaFila + 1, totalRows - ultimaFila);
+      }
+      
       // Flush para asegurar escritura inmediata
       SpreadsheetApp.flush();
     }
 
-    // Query optimizada para órdenes liberadas
+    // Query para órdenes liberadas
     const queryLiberadas = `
-      SELECT TOP 500 d.OrderHed_OrderNum, d.Zona, d.Customer_Name,
+      SELECT d.OrderHed_OrderNum, d.Zona, d.Customer_Name,
              CONVERT(VARCHAR, d.FechaLiberacionCredito, 23) AS Fecha,
              d.HoraLiberacionCredito,
              oh.CreditOverrideUserID, u.Name, d.ObservacionesRetencionCredito
@@ -97,7 +159,7 @@ function actualizarYEnviarOrdenesCredito() {
     `;
 
     const stmt2 = conn.createStatement();
-    stmt2.setFetchSize(100); // Optimización: fetch en bloques
+    stmt2.setFetchSize(100);
     const results2 = stmt2.executeQuery(queryLiberadas);
     const dataLiberadas = [];
     const registrosEncuesta = [];
@@ -148,7 +210,9 @@ function actualizarYEnviarOrdenesCredito() {
     conn.close();
   }
 
-  // Mapeos de zonas (pre-compilados para mejor rendimiento)
+  // ================== ENVÍO DE ÓRDENES POR WHATSAPP ==================
+  
+  // Mapeos de zonas
   const zonaANumero = {
     "Zona1Cundinamarca-Boyacá-Santa": "3182260739",
     "Zona2-Cundinamarca": "3182260739",
@@ -175,7 +239,8 @@ function actualizarYEnviarOrdenesCredito() {
     "Ecuador": "3182260739",
     "Licitaciones Colinagro": "3182260739",
     "Bolivia": "3182260739",
-    "Gerencia General": "3182260739"
+    "Gerencia General": "3182260739",
+    "Republica Dominicana": "3182260739"
   };
 
   const zonaANombre = {
@@ -204,7 +269,8 @@ function actualizarYEnviarOrdenesCredito() {
     "Ecuador": "Sandra Valverde",
     "Licitaciones Colinagro": "Sandra Valverde",
     "Bolivia": "Representante sin asignar",
-    "Gerencia General": "Representante sin asignar"
+    "Gerencia General": "Representante sin asignar",
+    "Republica Dominicana": "Representante sin asignar"
   };
 
   // Leer datos para envío
@@ -226,21 +292,33 @@ function actualizarYEnviarOrdenesCredito() {
     observacion: encabezados.indexOf("Observación")
   };
 
+  // Verificar que existan todas las columnas necesarias
+  if ([indices.zona, indices.cliente, indices.orden, indices.fecha, indices.observacion].includes(-1)) {
+    SpreadsheetApp.getUi().alert("❌ Faltan columnas requeridas: 'Zona', 'Cliente', 'Órden', 'Fecha', 'Observación'");
+    return;
+  }
+
+  // Agregar columna de resultado si no existe
+  let idxResultado = encabezados.indexOf("ResultadoEnvio");
+  if (idxResultado === -1) {
+    sheets.ordenes.getRange(1, encabezados.length + 1).setValue("ResultadoEnvio");
+    idxResultado = encabezados.length;
+  }
+
   // Configuración de API
   const url = "https://go.botmaker.com/api/v1.0/intent/v2";
   const token = "eyJhbGciOiJIUzUxMiJ9.eyJidXNpbmVzc0lkIjoiY29saW5hZ3JvIiwibmFtZSI6IkJSQU5ET04gWUVTSUQgUkVZRVMgUEFSRE8iLCJhcGkiOnRydWUsImlkIjoiVmU5bWNWWVdKb2VEa1I1WHFUZzhGMkNlRmxXMiIsImV4cCI6MTkwMTIwODAzOCwianRpIjoiVmU5bWNWWVdKb2VEa1I1WHFUZzhGMkNlRmxXMiJ9.IyxhZ-wETqd70EatU9kpVpZCq6dEbywtd9_kkTjRMzo5A99lIGq9CNT0KTUKOE5Xg25D8o33pGkuWwgOWXDAlQ";
   const chatChannelNumber = "573142340715";
   
-  // Opciones base optimizadas
+  // Opciones base
   const baseOptions = {
     method: "post",
     contentType: "application/json",
     headers: { "access-token": token },
-    muteHttpExceptions: true,
-    timeout: 10000 // Timeout de 10 segundos
+    muteHttpExceptions: true
   };
 
-  const maxEnvios = 50;
+  const maxEnvios = 200; // Límite de envíos por ejecución
   let enviados = 0;
   const errores = [];
   
@@ -248,13 +326,17 @@ function actualizarYEnviarOrdenesCredito() {
   const fechaReporte = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy HH:mm:ss");
   const timeZone = "GMT-5";
 
-  // Procesar envíos con batch processing
-  const batchSize = 5; // Procesar de 5 en 5
-  const batches = [];
+  // Procesar envíos
+  const inicio = Date.now();
   
-  // Preparar todos los payloads primero
   for (let i = 0; i < Math.min(filas.length, maxEnvios); i++) {
     const fila = filas[i];
+    
+    // Verificar si ya fue enviado
+    const resultadoPrevio = fila[idxResultado];
+    if (resultadoPrevio && resultadoPrevio.toString().startsWith("✅")) {
+      continue;
+    }
     
     const zona = fila[indices.zona];
     const cliente = fila[indices.cliente];
@@ -264,72 +346,88 @@ function actualizarYEnviarOrdenesCredito() {
     
     let observacion = (fila[indices.observacion] || "").toString().trim();
     
-    // Si la observación ya contiene el número de orden al inicio, no agregarlo en el mensaje
-    const ordenPattern = new RegExp(`^${orden}:\\s*`, 'i');
-    if (ordenPattern.test(observacion)) {
-      // La observación ya tiene el número de orden, usarla tal cual
-      observacion = observacion;
-    } else {
-      // Si no tiene el número de orden, agregarlo
-      observacion = `${orden}: ${observacion || "SIN OBSERVACIÓN"}`;
+    // Limpiar observación del número de orden si ya lo tiene
+    const prefix = `${orden}:`;
+    if (observacion.toUpperCase().startsWith(prefix.toUpperCase())) {
+      observacion = observacion.slice(prefix.length).trim();
     }
 
-    const telefono = zonaANumero[zona] || "573182260739";
+    const telefono = "57" + (zonaANumero[zona] || "3182260739");
     const representante = zonaANombre[zona] || "Representante sin asignar";
+    const clientPayload = `ordenretenida_${zona.replace(/\s+/g, "_")}_${cliente.replace(/\s+/g, "_")}_${orden}_${Date.now()}`;
+
+    const params = {
+      "1": fechaReporte,
+      "2": representante,
+      "3": zona,
+      "4": cliente,
+      "5": `🔹 Orden: ${orden} - ${fechaOrden}`,
+      "6": `📄 ${orden}: ${observacion || "SIN OBSERVACIÓN"}`
+    };
 
     const payload = {
       chatPlatform: "whatsapp",
       chatChannelNumber,
       platformContactId: telefono,
       ruleNameOrId: "reporte_ordenes_retenidas",
-      params: {
-        "1": fechaReporte,
-        "2": representante,
-        "3": zona,
-        "4": cliente,
-        "5": `🔹 Orden: ${orden} - ${fechaOrden}`,
-        "6": `📄 ${observacion}`  // Ya no duplicar el orden aquí
-      },
-      clientPayload: `orden_${zona}_${cliente}_${orden}_${Date.now()}`.replace(/\s+/g, "_")
+      params,
+      clientPayload
     };
 
-    batches.push({ orden, payload });
-  }
-
-  // Enviar mensajes con optimización
-  const inicio = Date.now();
-  
-  for (let i = 0; i < batches.length; i++) {
-    const item = batches[i];
-    
     try {
       const response = UrlFetchApp.fetch(url, {
         ...baseOptions,
-        payload: JSON.stringify(item.payload)
+        payload: JSON.stringify(payload)
       });
       
       const texto = response.getContentText();
-      if (!texto.includes("success")) {
-        errores.push(`Orden ${item.orden}: ${texto}`);
+      let resultado;
+      
+      try {
+        const respuestaJson = JSON.parse(texto);
+        // Si tiene un ID y problems es null, fue exitoso
+        if (respuestaJson.id && respuestaJson.problems === null) {
+          resultado = "✅ Enviado";
+        } else if (texto.includes("success")) {
+          resultado = "✅ Enviado";
+        } else {
+          resultado = `⚠️ ${texto}`;
+          errores.push(`Orden ${orden}: ${texto}`);
+        }
+      } catch (e) {
+        // Si no es JSON válido, verificar si contiene "success"
+        resultado = texto.includes("success") ? "✅ Enviado" : `⚠️ ${texto}`;
+        if (!texto.includes("success")) {
+          errores.push(`Orden ${orden}: ${texto}`);
+        }
       }
+      
+      sheets.ordenes.getRange(i + 2, idxResultado + 1).setValue(resultado);
+      
       enviados++;
+      
     } catch (e) {
-      errores.push(`Orden ${item.orden}: ${e.message}`);
+      const errorMsg = `❌ Error: ${e.message}`;
+      sheets.ordenes.getRange(i + 2, idxResultado + 1).setValue(errorMsg);
+      errores.push(`Orden ${orden}: ${e.message}`);
     }
     
-    // Optimización del sleep: reducir tiempo y solo si no es el último
-    if (i < batches.length - 1) {
-      Utilities.sleep(150); // Reducido de 300ms a 150ms
+    // Sleep entre mensajes - aumentado para evitar límites de rate
+    if (i < Math.min(filas.length - 1, maxEnvios - 1)) {
+      Utilities.sleep(1000); // Aumentado a 1 segundo
     }
   }
 
   const tiempoTotal = (Date.now() - inicio) / 1000;
 
-  // Log de resultados consolidado
+  // Log de resultados
+  Logger.log(`✅ Proceso completo en ${tiempoTotal}s`);
+  Logger.log(`📊 RESUMEN:`);
+  Logger.log(`- Órdenes procesadas: ${enviados}`);
+  Logger.log(`- Errores encontrados: ${errores.length}`);
+  
   if (errores.length > 0) {
-    Logger.log(`⚠️ Se encontraron ${errores.length} errores:`);
+    Logger.log(`⚠️ Detalle de errores:`);
     errores.forEach(error => Logger.log(error));
   }
-
-  Logger.log(`✅ Proceso completo en ${tiempoTotal}s: ${enviados} órdenes enviadas de ${filas.length} totales.`);
 }
