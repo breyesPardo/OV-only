@@ -46,7 +46,6 @@ function verificarCambiosOrdenes() {
 function actualizarYEnviarOrdenesCredito(esReporteDiario = true) {
   const hojaOrdenes = "OrdenesRetenidas";
   const hojaLogs = "LogsLiberaciones";
-  const hojaEncuesta = "EncuestaOrdenes";
   const hojaControl = "ControlEnvios"; // Nueva hoja de control
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
@@ -56,16 +55,20 @@ function actualizarYEnviarOrdenesCredito(esReporteDiario = true) {
     ss.deleteSheet(hojaTrazabilidad);
   }
 
+  // Eliminar hoja EncuestaOrdenes si existe
+  const hojaEncuestaVieja = ss.getSheetByName("EncuestaOrdenes");
+  if (hojaEncuestaVieja) {
+    ss.deleteSheet(hojaEncuestaVieja);
+  }
+
   const encabezadoOrdenes = ["Zona", "Cliente", "Órden", "Fecha", "Observación", "Estado", "Motivo Retención"];
   const encabezadoLogs = ["OrderNum", "Zona", "Cliente", "Fecha Liberación", "Hora Liberación", "UsuarioID", "Nombre Usuario", "Observaciones", "Estado"];
-  const encabezadoEncuesta = ["N° en lista", "Número de Orden", "Fecha y hora del registro", "Cliente"];
   const encabezadoControl = ["Orden", "Estado", "Fecha Ultimo Envio", "Hora Ultimo Envio", "Tipo Mensaje", "Enviado Hoy Retenida", "Enviado Hoy Liberada", "Hash Datos"];
 
   // Batch: Obtener y configurar todas las hojas en una operación
   const sheets = {};
   sheets.ordenes = ss.getSheetByName(hojaOrdenes) || ss.insertSheet(hojaOrdenes);
   sheets.logs = ss.getSheetByName(hojaLogs) || ss.insertSheet(hojaLogs);
-  sheets.encuesta = ss.getSheetByName(hojaEncuesta) || ss.insertSheet(hojaEncuesta);
   sheets.control = ss.getSheetByName(hojaControl) || ss.insertSheet(hojaControl);
 
   // Configurar hoja de control si es nueva
@@ -82,15 +85,6 @@ function actualizarYEnviarOrdenesCredito(esReporteDiario = true) {
     sheets.logs.appendRow(encabezadoLogs);
   }
   // NO se eliminan registros antiguos - se mantiene toda la trazabilidad histórica
-
-  sheets.encuesta.clear();
-  sheets.encuesta.appendRow(encabezadoEncuesta);
-  
-  // Proteger hoja de encuesta
-  const protection = sheets.encuesta.protect();
-  protection.setDescription("Protección encuesta de órdenes liberadas");
-  protection.removeEditors(protection.getEditors());
-  if (protection.canDomainEdit()) protection.setDomainEdit(false);
 
   // Cargar datos de control existentes
   const controlData = {};
@@ -199,6 +193,7 @@ function actualizarYEnviarOrdenesCredito(esReporteDiario = true) {
     }
 
     // Query para órdenes liberadas - MODIFICADO PARA TRAER DESDE EL 1 DE JULIO DE 2025
+    // Ordenadas por fecha descendente (más recientes primero)
     const queryLiberadas = `
       SELECT d.OrderHed_OrderNum, d.Zona, d.Customer_Name,
              CONVERT(VARCHAR, d.FechaLiberacionCredito, 23) AS Fecha,
@@ -210,15 +205,13 @@ function actualizarYEnviarOrdenesCredito(esReporteDiario = true) {
       WHERE d.CreditoRetenido = 0 AND d.OrderHed_VoidOrder = 0 AND d.Zona != 'Comercial Agrosoil'
         AND oh.CreditOverride = 1 AND d.FechaLiberacionCredito IS NOT NULL
         AND d.FechaLiberacionCredito >= '2025-07-01'
-      ORDER BY d.FechaLiberacionCredito DESC
+      ORDER BY d.FechaLiberacionCredito DESC, d.HoraLiberacionCredito DESC
     `;
 
     const stmt2 = conn.createStatement();
     stmt2.setFetchSize(100);
     const results2 = stmt2.executeQuery(queryLiberadas);
     const dataLiberadas = [];
-    const registrosEncuesta = [];
-    let contadorEncuesta = 100;
 
     // Procesar órdenes liberadas
     while (results2.next()) {
@@ -227,7 +220,6 @@ function actualizarYEnviarOrdenesCredito(esReporteDiario = true) {
       const cliente = results2.getString("Customer_Name");
       const fecha = results2.getString("Fecha") || "";
       const hora = results2.getString("HoraLiberacionCredito") || "";
-      const fechaHoraCompleta = fecha ? `${fecha} ${hora}` : "";
       const observacion = (results2.getString("ObservacionesRetencionCredito") || "SIN OBSERVACIONES REGISTRADAS").toUpperCase();
 
       dataLiberadas.push([
@@ -235,29 +227,26 @@ function actualizarYEnviarOrdenesCredito(esReporteDiario = true) {
         results2.getString("CreditOverrideUserID") || "",
         results2.getString("Name") || "", observacion, "LIBERADA"
       ]);
-
-      registrosEncuesta.push([contadorEncuesta, ordenNum, fechaHoraCompleta, cliente]);
-      contadorEncuesta += 100;
       
       ordenesLiberadasActuales.add(ordenNum);
     }
     stmt2.close();
 
-    // Escribir logs y encuesta en batch
+    // Escribir logs en batch - INSERTAR AL PRINCIPIO (más recientes arriba)
     if (dataLiberadas.length > 0) {
       const marcaTiempo = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy HH:mm:ss");
-      const filaInicio = sheets.logs.getLastRow() + 1;
       
-      const datosConSeparador = [["", "", "", "", "", "", "", "", `← Nuevas liberaciones: ${marcaTiempo}`]];
+      // Preparar datos con separador
+      const datosConSeparador = [];
       datosConSeparador.push(...dataLiberadas);
+      datosConSeparador.push(["", "", "", "", "", "", "", "", `← Nuevas liberaciones: ${marcaTiempo}`]);
       
-      sheets.logs.getRange(filaInicio, 1, datosConSeparador.length, encabezadoLogs.length)
+      // Insertar filas después del encabezado (fila 2)
+      sheets.logs.insertRowsAfter(1, datosConSeparador.length);
+      
+      // Escribir los nuevos datos en las filas insertadas
+      sheets.logs.getRange(2, 1, datosConSeparador.length, encabezadoLogs.length)
         .setValues(datosConSeparador);
-    }
-
-    if (registrosEncuesta.length > 0) {
-      sheets.encuesta.getRange(2, 1, registrosEncuesta.length, encabezadoEncuesta.length)
-        .setValues(registrosEncuesta);
     }
 
     // Flush para asegurar todas las escrituras
@@ -314,11 +303,12 @@ function actualizarYEnviarOrdenesCredito(esReporteDiario = true) {
     const control = controlData[orden];
     
     if (control && control.estado === 'RETENIDA' && !control.enviadoHoyLiberada) {
-      // Buscar datos de la orden en los logs
+      // Buscar datos de la orden en los logs - ahora buscar desde el principio
       const datosLogs = sheets.logs.getDataRange().getValues();
       let datosOrden = null;
       
-      for (let i = datosLogs.length - 1; i >= 1; i--) {
+      // Buscar desde el principio (registros más recientes primero)
+      for (let i = 1; i < datosLogs.length; i++) {
         if (datosLogs[i][0] === orden) {
           datosOrden = {
             zona: datosLogs[i][1],
