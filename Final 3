@@ -1,0 +1,1504 @@
+// ================== CONFIGURACIÓN INICIAL ==================
+
+function configuracionInicial() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  // Crear hoja de contactos si no existe
+  let hojaContactos = ss.getSheetByName("ContactosZonas");
+  if (!hojaContactos) {
+    hojaContactos = ss.insertSheet("ContactosZonas");
+    
+    // Encabezados
+    const encabezados = ["Zona", "Nombre Representante", "WhatsApp", "Email", "Activo"];
+    hojaContactos.getRange(1, 1, 1, encabezados.length).setValues([encabezados]);
+    
+    // Datos iniciales
+    const contactosIniciales = [
+      ["Zona1Cundinamarca-Boyacá-Santa", "Juan Camilo Gil Orjuela", "3182260739", "", "SI"],
+      ["Zona2-Cundinamarca", "Sergio Andres Rojas Sanchez", "3182260739", "", "SI"],
+      ["Zona3-Boyacá", "Yury Fonseca Patarroyo", "3182260739", "", "SI"],
+      ["Zona4-Santander-Cesar", "Oscar Fernando Chingate Cruz", "3182260739", "", "SI"],
+      ["Zona5-Norte de Santander", "Freddy Andres Bastianelli Fontana", "3182260739", "", "SI"],
+      ["Zona6-Suroeste Antioqueño", "Carlos Andres Arboleda Tabares", "3182260739", "", "SI"],
+      ["Zona7-Oriente y Nte Antioquía", "Rafael Leonardo Peña Sarmiento", "3182260739", "", "SI"],
+      ["Zona8-Meta", "Ximena Nathalia Nuñez Cruz", "3182260739", "", "SI"],
+      ["Zona9-Casanaré", "Angel Alonso Vasquez Morales", "3182260739", "", "SI"],
+      ["Zona10-Tolima Centro - Norte", "Assad Fraija Lopera", "3182260739", "", "SI"],
+      ["Zona11-Tolima Sur y Oriente", "Edna Liliana Portillo", "3182260739", "", "SI"],
+      ["Zona12-Huila Norte", "Domingo Jose Soto Martinez", "3182260739", "", "SI"],
+      ["Zona14-HuilaCentroSur-Caquetá", "Ivan Dario Lopez Rubio", "3182260739", "", "SI"],
+      ["Zona15-Cauca", "Claudia Patricia Ussa", "3182260739", "", "SI"],
+      ["Zona16-Nariño", "Carlos Alberto Castillo Ñañez", "3182260739", "", "SI"],
+      ["Zona17-Valle", "Diego Herney Guisa Velasquez", "3182260739", "", "SI"],
+      ["Zona18-Eje Cafetero", "Juan Pablo Londoño Aristizabal", "3182260739", "", "SI"],
+      ["Zona 19 Palma", "Juan Pablo Carranza", "3182260739", "", "SI"],
+      ["Zona 20 Urabá", "Gadelia Gliseth Gomez Gomez", "3182260739", "", "SI"],
+      ["Zona 21 Caña", "Juan Pablo Carranza", "3182260739", "", "SI"],
+      ["Zona 23 - Caribe seco", "Sandra Judith Castillo", "3182260739", "", "SI"],
+      ["Zona 25 Flores", "Javier Leonardo Erazo Velandia", "3182260739", "", "SI"],
+      ["Ecuador", "Sandra Valverde", "3182260739", "", "SI"],
+      ["Licitaciones Colinagro", "Sandra Valverde", "3182260739", "", "SI"],
+      ["Bolivia", "Representante sin asignar", "3182260739", "", "SI"],
+      ["Gerencia General", "Representante sin asignar", "3182260739", "", "SI"],
+      ["Republica Dominicana", "Representante sin asignar", "3182260739", "", "SI"]
+    ];
+    
+    hojaContactos.getRange(2, 1, contactosIniciales.length, encabezados.length).setValues(contactosIniciales);
+    
+    // Formato
+    hojaContactos.getRange(1, 1, 1, encabezados.length).setFontWeight("bold").setBackground("#4285f4").setFontColor("white");
+    hojaContactos.setFrozenRows(1);
+    hojaContactos.autoResizeColumns(1, encabezados.length);
+    
+    SpreadsheetApp.getUi().alert(
+      '✅ Hoja de Contactos Creada', 
+      'Se ha creado la hoja "ContactosZonas" con los datos iniciales.\n\n' +
+      'Puedes actualizar los números de WhatsApp y nombres directamente en esta hoja.',
+      SpreadsheetApp.getUi().ButtonSet.OK
+    );
+  }
+}
+
+// ================== FUNCIÓN PARA CARGAR CONTACTOS ==================
+
+function cargarContactosZonas() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const hojaContactos = ss.getSheetByName("ContactosZonas");
+  
+  if (!hojaContactos) {
+    throw new Error("No se encontró la hoja ContactosZonas. Ejecuta configuracionInicial() primero.");
+  }
+  
+  const datos = hojaContactos.getDataRange().getValues();
+  const zonaANumero = {};
+  const zonaANombre = {};
+  
+  // Saltar encabezados (fila 1)
+  for (let i = 1; i < datos.length; i++) {
+    const [zona, nombre, whatsapp, email, activo] = datos[i];
+    
+    // Solo cargar contactos activos
+    if (activo === "SI" && zona && whatsapp) {
+      zonaANumero[zona] = whatsapp;
+      zonaANombre[zona] = nombre || "Representante sin asignar";
+    }
+  }
+  
+  return { zonaANumero, zonaANombre };
+}
+
+// ================== CONFIGURACIÓN AUTOMÁTICA ==================
+
+function configurarTriggersDiarios() {
+  // Primero asegurar que existe la hoja de contactos
+  configuracionInicial();
+  
+  // Eliminar triggers existentes
+  ScriptApp.getProjectTriggers().forEach(trigger => ScriptApp.deleteTrigger(trigger));
+  
+  // Trigger diario 7:00 AM - Reporte completo
+  ScriptApp.newTrigger('reporteDiario')
+    .timeBased()
+    .atHour(7)
+    .everyDays(1)
+    .create();
+    
+  // Triggers horarios 8 AM - 6 PM - Solo cambios
+  for (let hora = 8; hora <= 18; hora++) {
+    ScriptApp.newTrigger('verificarCambios')
+      .timeBased()
+      .atHour(hora)
+      .everyDays(1)
+      .create();
+  }
+    
+  SpreadsheetApp.getUi().alert(
+    '✅ Sistema Configurado', 
+    'El sistema enviará automáticamente:\n\n' +
+    '• 7:00 AM: Todas las órdenes retenidas\n' +
+    '• 8 AM - 6 PM: Solo cambios (liberaciones y nuevas)',
+    SpreadsheetApp.getUi().ButtonSet.OK
+  );
+}
+
+function reporteDiario() {
+  Logger.log("=== REPORTE DIARIO 7:00 AM ===");
+  actualizarYEnviarOrdenesCredito(true);
+}
+
+function verificarCambios() {
+  Logger.log("=== VERIFICACIÓN HORARIA ===");
+  actualizarYEnviarOrdenesCredito(false);
+}
+
+// ================== FUNCIÓN PRINCIPAL MODIFICADA ==================
+
+function actualizarYEnviarOrdenesCredito(esReporteDiario = true) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  // Configuración de hojas
+  const sheets = {
+    ordenes: ss.getSheetByName("OrdenesRetenidas") || ss.insertSheet("OrdenesRetenidas"),
+    logs: ss.getSheetByName("LogsLiberaciones") || ss.insertSheet("LogsLiberaciones"),
+    control: ss.getSheetByName("ControlEnvios") || crearHojaControlEnvios(ss)
+  };
+  
+  // Encabezados
+  const encabezados = {
+    ordenes: ["Zona", "Cliente", "Órden", "Fecha", "Observación", "Estado", "Motivo Retención"],
+    logs: ["OrderNum", "Zona", "Cliente", "Fecha Liberación", "Hora Liberación", "UsuarioID", "Nombre Usuario", "Observaciones", "Estado"],
+    control: ["Número de Orden", "Estado Actual", "Fecha Último Envío", "Hora Último Envío", "Tipo de Notificación", "¿Retenida Notificada Hoy?", "¿Liberación Notificada Hoy?", "Cliente", "Zona"]
+  };
+  
+  // Inicializar hojas
+  sheets.ordenes.clear();
+  sheets.ordenes.getRange(1, 1, 1, encabezados.ordenes.length).setValues([encabezados.ordenes]);
+  
+  if (sheets.logs.getLastRow() === 0) {
+    sheets.logs.appendRow(encabezados.logs);
+  }
+  
+  // Verificar si la hoja control tiene los encabezados correctos
+  if (sheets.control.getLastRow() === 0 || !verificarEncabezadosControl(sheets.control)) {
+    sheets.control.clear();
+    sheets.control.getRange(1, 1, 1, encabezados.control.length).setValues([encabezados.control]);
+    // Aplicar formato inicial a encabezados
+    sheets.control.getRange(1, 1, 1, encabezados.control.length).setFontWeight("bold").setBackground("#4285f4").setFontColor("white");
+    sheets.control.setFrozenRows(1);
+    sheets.control.autoResizeColumns(1, encabezados.control.length);
+  }
+  
+  // Cargar control existente
+  const controlData = {};
+  const hoy = new Date();
+  const fechaHoy = Utilities.formatDate(hoy, Session.getScriptTimeZone(), "dd/MM/yyyy");
+  
+  if (sheets.control.getLastRow() > 1) {
+    const datosControl = sheets.control.getDataRange().getValues();
+    for (let i = 1; i < datosControl.length; i++) {
+      const [orden, estado, fechaEnvio, horaEnvio, tipoNotificacion, enviadoHoyRetenida, enviadoHoyLiberada, cliente, zona] = datosControl[i];
+      controlData[orden] = { 
+        estado, 
+        fechaEnvio, 
+        horaEnvio, 
+        tipoNotificacion, 
+        enviadoHoyRetenida: (fechaEnvio === fechaHoy) ? enviadoHoyRetenida : "NO",
+        enviadoHoyLiberada: (fechaEnvio === fechaHoy) ? enviadoHoyLiberada : "NO",
+        cliente,
+        zona,
+        fila: i + 1 
+      };
+    }
+  }
+  
+  // Conexión a base de datos
+  const conn = Jdbc.getConnection("jdbc:sqlserver://35.243.175.82:1433;databaseName=EpicorRepTran", "udlxls", "#kYe-343");
+  const ordenesRetenidasActuales = new Map();
+  const ordenesLiberadasActuales = new Set();
+  
+  try {
+    // Query órdenes retenidas
+    const queryRetenidas = `
+      SELECT d.OrderHed_OrderNum, 
+             CONVERT(VARCHAR, d.OrderHed_OrderDate, 23) AS Fecha,
+             d.Zona, d.Customer_Name, d.ObservacionesRetencionCredito
+      FROM EpicorRepTran.dbo.udvPortalCustDtlOV d WITH (NOLOCK)
+      WHERE d.CreditoRetenido = 1 AND d.OrderHed_VoidOrder = 0 AND d.Zona != 'Comercial Agrosoil'
+        AND (d.CreditOverride IS NULL OR d.CreditOverride = 0)
+      ORDER BY d.OrderHed_OrderNum DESC
+    `;
+    
+    const stmt1 = conn.createStatement();
+    const results1 = stmt1.executeQuery(queryRetenidas);
+    const filasOrdenes = [];
+    const ordenesVistas = new Set();
+    
+    while (results1.next()) {
+      const zona = results1.getString("Zona");
+      const cliente = results1.getString("Customer_Name");
+      const orden = results1.getString("OrderHed_OrderNum");
+      
+      if (ordenesVistas.has(orden)) continue;
+      ordenesVistas.add(orden);
+      
+      const fecha = results1.getString("Fecha");
+      const observacion = (results1.getString("ObservacionesRetencionCredito") || "SIN OBSERVACIONES REGISTRADAS").toUpperCase();
+      
+      filasOrdenes.push([
+        zona, cliente, orden, fecha,
+        `${orden}: ${observacion}`, "RETENIDA", "CRÉDITO"
+      ]);
+      
+      ordenesRetenidasActuales.set(orden, {
+        zona, cliente, fecha, observacion
+      });
+    }
+    stmt1.close();
+    
+    // Escribir órdenes retenidas
+    if (filasOrdenes.length > 0) {
+      sheets.ordenes.getRange(2, 1, filasOrdenes.length, encabezados.ordenes.length).setValues(filasOrdenes);
+    }
+    
+    // Query órdenes liberadas
+    const queryLiberadas = `
+      SELECT d.OrderHed_OrderNum, d.Zona, d.Customer_Name,
+             CONVERT(VARCHAR, d.FechaLiberacionCredito, 23) AS Fecha,
+             d.HoraLiberacionCredito,
+             oh.CreditOverrideUserID, u.Name, d.ObservacionesRetencionCredito
+      FROM EpicorRepTran.dbo.udvPortalCustDtlOV d WITH (NOLOCK)
+      JOIN EpicorRepTran.dbo.OrderHed oh WITH (NOLOCK) ON d.OrderHed_OrderNum = oh.OrderNum AND d.OrderHed_Company = oh.Company
+      LEFT JOIN EpicorTrain10.dbo.UserFile u WITH (NOLOCK) ON oh.CreditOverrideUserID = u.DcdUserID
+      WHERE d.CreditoRetenido = 0 AND d.OrderHed_VoidOrder = 0 AND d.Zona != 'Comercial Agrosoil'
+        AND oh.CreditOverride = 1 AND d.FechaLiberacionCredito IS NOT NULL
+        AND d.FechaLiberacionCredito >= '2025-07-01'
+      ORDER BY d.FechaLiberacionCredito DESC, d.HoraLiberacionCredito DESC
+    `;
+    
+    const stmt2 = conn.createStatement();
+    const results2 = stmt2.executeQuery(queryLiberadas);
+    const dataLiberadas = [];
+    
+    while (results2.next()) {
+      const ordenNum = results2.getString("OrderHed_OrderNum");
+      const zona = results2.getString("Zona");
+      const cliente = results2.getString("Customer_Name");
+      const fecha = results2.getString("Fecha") || "";
+      const hora = results2.getString("HoraLiberacionCredito") || "";
+      const observacion = (results2.getString("ObservacionesRetencionCredito") || "SIN OBSERVACIONES REGISTRADAS").toUpperCase();
+      
+      dataLiberadas.push([
+        ordenNum, zona, cliente, fecha, hora, 
+        results2.getString("CreditOverrideUserID") || "",
+        results2.getString("Name") || "", observacion, "LIBERADA"
+      ]);
+      
+      ordenesLiberadasActuales.add(ordenNum);
+    }
+    stmt2.close();
+    
+    // Escribir logs de liberaciones
+    if (dataLiberadas.length > 0) {
+      const marcaTiempo = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy HH:mm:ss");
+      const datosConSeparador = [...dataLiberadas, ["", "", "", "", "", "", "", "", `← Nuevas liberaciones: ${marcaTiempo}`]];
+      sheets.logs.insertRowsAfter(1, datosConSeparador.length);
+      sheets.logs.getRange(2, 1, datosConSeparador.length, encabezados.logs.length).setValues(datosConSeparador);
+    }
+    
+  } finally {
+    conn.close();
+  }
+  
+  // Determinar qué órdenes enviar
+  const ordenesParaEnviar = [];
+  const horaActual = Utilities.formatDate(hoy, Session.getScriptTimeZone(), "HH:mm:ss");
+  
+  // Verificar órdenes retenidas
+  for (const [orden, datos] of ordenesRetenidasActuales) {
+    const control = controlData[orden];
+    let debeEnviar = false;
+    let tipoMensaje = '';
+    let mensajeExtra = '';
+    
+    if (!control) {
+      debeEnviar = true;
+      tipoMensaje = 'Nueva orden retenida';
+      mensajeExtra = '🆕 NUEVA ORDEN RETENIDA';
+    } else if (control.estado === 'LIBERADA' && control.enviadoHoyRetenida === "NO") {
+      debeEnviar = true;
+      tipoMensaje = 'Orden volvió a retención';
+      mensajeExtra = '⚠️ ORDEN VOLVIÓ A RETENCIÓN';
+    } else if (esReporteDiario && control.enviadoHoyRetenida === "NO") {
+      debeEnviar = true;
+      tipoMensaje = 'Reporte diario 7:00 AM';
+      mensajeExtra = '📊 REPORTE DIARIO 7:00 AM';
+    }
+    
+    if (debeEnviar) {
+      ordenesParaEnviar.push({
+        orden, tipo: tipoMensaje, datos, mensaje: mensajeExtra, esLiberada: false
+      });
+    }
+  }
+  
+  // Verificar órdenes liberadas
+  for (const orden of ordenesLiberadasActuales) {
+    const control = controlData[orden];
+    
+    if (control && control.estado === 'RETENIDA' && control.enviadoHoyLiberada === "NO") {
+      const datosLogs = sheets.logs.getDataRange().getValues();
+      let datosOrden = null;
+      
+      for (let i = 1; i < datosLogs.length; i++) {
+        if (datosLogs[i][0] === orden) {
+          datosOrden = {
+            zona: datosLogs[i][1],
+            cliente: datosLogs[i][2],
+            fecha: datosLogs[i][3],
+            observacion: datosLogs[i][7]
+          };
+          break;
+        }
+      }
+      
+      if (datosOrden) {
+        ordenesParaEnviar.push({
+          orden, tipo: 'Orden liberada', datos: datosOrden, mensaje: '✅ ORDEN LIBERADA', esLiberada: true
+        });
+      }
+    }
+  }
+  
+  // Enviar notificaciones
+  enviarNotificacionesWhatsApp(ordenesParaEnviar, sheets, controlData, fechaHoy, horaActual);
+  
+  Logger.log(`✅ Proceso completo - Tipo: ${esReporteDiario ? 'REPORTE DIARIO' : 'VERIFICACIÓN'} - Enviadas: ${ordenesParaEnviar.length}`);
+}
+
+// ================== FUNCIÓN DE ENVÍO MODIFICADA ==================
+
+function enviarNotificacionesWhatsApp(ordenesParaEnviar, sheets, controlData, fechaHoy, horaActual) {
+  if (ordenesParaEnviar.length === 0) return;
+  
+  // Cargar contactos desde la hoja
+  let contactos;
+  try {
+    contactos = cargarContactosZonas();
+  } catch (e) {
+    Logger.log(`Error cargando contactos: ${e.message}`);
+    SpreadsheetApp.getUi().alert('Error', 'No se pudieron cargar los contactos. Verifica la hoja ContactosZonas.', SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+  
+  const { zonaANumero, zonaANombre } = contactos;
+  
+  // Configuración API
+  const url = "https://go.botmaker.com/api/v1.0/intent/v2";
+  const token = "eyJhbGciOiJIUzUxMiJ9.eyJidXNpbmVzc0lkIjoiY29saW5hZ3JvIiwibmFtZSI6IkJSQU5ET04gWUVTSUQgUkVZRVMgUEFSRE8iLCJhcGkiOnRydWUsImlkIjoiVmU5bWNWWVdKb2VEa1I1WHFUZzhGMkNlRmxXMiIsImV4cCI6MTkwMTIwODAzOCwianRpIjoiVmU5bWNWWVdKb2VEa1I1WHFUZzhGMkNlRmxXMiJ9.IyxhZ-wETqd70EatU9kpVpZCq6dEbywtd9_kkTjRMzo5A99lIGq9CNT0KTUKOE5Xg25D8o33pGkuWwgOWXDAlQ";
+  const chatChannelNumber = "573142340715";
+  const fechaReporte = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy HH:mm:ss");
+  
+  const actualizacionesControl = [];
+  const maxEnvios = 200;
+  let enviados = 0;
+  
+  for (const ordenInfo of ordenesParaEnviar) {
+    if (enviados >= maxEnvios) break;
+    
+    const { orden, tipo, datos, mensaje, esLiberada } = ordenInfo;
+    const telefono = "57" + (zonaANumero[datos.zona] || "3182260739");
+    const representante = zonaANombre[datos.zona] || "Representante sin asignar";
+    
+    // Verificar si tenemos el contacto
+    if (!zonaANumero[datos.zona]) {
+      Logger.log(`⚠️ No se encontró contacto para la zona: ${datos.zona}`);
+      continue;
+    }
+    
+    // Formatear fecha
+    let fechaOrden = formatearFecha(datos.fecha);
+    
+    const params = esLiberada ? {
+      "1": orden,
+      "2": fechaOrden,
+      "3": datos.cliente,
+      "4": datos.zona,
+      "5": representante,
+      "6": datos.observacion
+    } : {
+      "1": fechaReporte,
+      "2": representante,
+      "3": datos.zona,
+      "4": datos.cliente,
+      "5": `${mensaje} 🔹 Orden: ${orden} - ${fechaOrden}`,
+      "6": `📄 ${orden}: ${datos.observacion}`
+    };
+    
+    const payload = {
+      chatPlatform: "whatsapp",
+      chatChannelNumber,
+      platformContactId: telefono,
+      ruleNameOrId: esLiberada ? "reporte_ordenes_liberadas" : "reporte_ordenes_retenidas",
+      params,
+      clientPayload: `orden_${tipo}_${orden}_${Date.now()}`
+    };
+    
+    try {
+      const response = UrlFetchApp.fetch(url, {
+        method: "post",
+        contentType: "application/json",
+        headers: { "access-token": token },
+        payload: JSON.stringify(payload),
+        muteHttpExceptions: true
+      });
+      
+      const texto = response.getContentText();
+      if (texto.includes("success") || (JSON.parse(texto).id && JSON.parse(texto).problems === null)) {
+        actualizacionesControl.push({
+          orden, 
+          estado: esLiberada ? 'LIBERADA' : 'RETENIDA',
+          fechaEnvio: fechaHoy,
+          horaEnvio: horaActual,
+          tipoNotificacion: tipo,
+          enviadoHoyRetenida: !esLiberada ? "SI" : "NO",
+          enviadoHoyLiberada: esLiberada ? "SI" : "NO",
+          cliente: datos.cliente,
+          zona: datos.zona
+        });
+        enviados++;
+      }
+    } catch (e) {
+      Logger.log(`Error enviando orden ${orden}: ${e.message}`);
+    }
+    
+    if (enviados < maxEnvios) Utilities.sleep(1000);
+  }
+  
+  // Actualizar control con formato amigable
+  for (const act of actualizacionesControl) {
+    if (controlData[act.orden] && controlData[act.orden].fila) {
+      const fila = controlData[act.orden].fila;
+      const valores = sheets.control.getRange(fila, 1, 1, 9).getValues()[0];
+      sheets.control.getRange(fila, 1, 1, 9).setValues([[
+        act.orden, 
+        act.estado, 
+        act.fechaEnvio, 
+        act.horaEnvio, 
+        act.tipoNotificacion,
+        act.enviadoHoyRetenida === "SI" || valores[5] === "SI" ? "SI" : "NO", 
+        act.enviadoHoyLiberada === "SI" || valores[6] === "SI" ? "SI" : "NO", 
+        act.cliente || valores[7],
+        act.zona || valores[8]
+      ]]);
+    } else {
+      sheets.control.appendRow([
+        act.orden, 
+        act.estado, 
+        act.fechaEnvio, 
+        act.horaEnvio, 
+        act.tipoNotificacion,
+        act.enviadoHoyRetenida, 
+        act.enviadoHoyLiberada, 
+        act.cliente,
+        act.zona
+      ]);
+    }
+  }
+  
+  // Aplicar formato condicional a la hoja de control
+  if (sheets.control.getLastRow() > 1) {
+    const rangoEstado = sheets.control.getRange(2, 2, sheets.control.getLastRow() - 1, 1);
+    
+    // Limpiar reglas existentes
+    rangoEstado.clearFormat();
+    
+    // Formato condicional para estado
+    const reglasFormato = sheets.control.getConditionalFormatRules();
+    
+    // Regla para RETENIDA (rojo)
+    const reglaRetenida = SpreadsheetApp.newConditionalFormatRule()
+      .whenTextEqualTo('RETENIDA')
+      .setBackground('#ffcdd2')
+      .setFontColor('#c62828')
+      .setRanges([rangoEstado])
+      .build();
+    
+    // Regla para LIBERADA (verde)
+    const reglaLiberada = SpreadsheetApp.newConditionalFormatRule()
+      .whenTextEqualTo('LIBERADA')
+      .setBackground('#c8e6c9')
+      .setFontColor('#2e7d32')
+      .setRanges([rangoEstado])
+      .build();
+    
+    sheets.control.setConditionalFormatRules([reglaRetenida, reglaLiberada]);
+    
+    // Auto-ajustar columnas
+    sheets.control.autoResizeColumns(1, 9);
+  }
+}
+
+// ================== UTILIDADES ==================
+
+function formatearFecha(fecha) {
+  if (!fecha) return "Sin fecha";
+  
+  const fechaStr = String(fecha);
+  const partesFecha = fechaStr.split('-');
+  
+  if (partesFecha.length === 3) {
+    return `${partesFecha[2]}/${partesFecha[1]}/${partesFecha[0]}`;
+  }
+  
+  const partesFechaBarra = fechaStr.split('/');
+  if (partesFechaBarra.length === 3) {
+    return fechaStr;
+  }
+  
+  try {
+    const fechaObj = new Date(fecha);
+    if (!isNaN(fechaObj.getTime())) {
+      return Utilities.formatDate(fechaObj, "GMT-5", "dd/MM/yyyy");
+    }
+  } catch (e) {}
+  
+  return fechaStr;
+}
+
+// Función para crear hoja ControlEnvios con formato correcto
+function crearHojaControlEnvios(ss) {
+  const hojaControl = ss.insertSheet("ControlEnvios");
+  
+  const encabezados = [
+    "Número de Orden", 
+    "Estado Actual", 
+    "Fecha Último Envío", 
+    "Hora Último Envío", 
+    "Tipo de Notificación", 
+    "¿Retenida Notificada Hoy?", 
+    "¿Liberación Notificada Hoy?", 
+    "Cliente", 
+    "Zona"
+  ];
+  
+  hojaControl.getRange(1, 1, 1, encabezados.length).setValues([encabezados]);
+  hojaControl.getRange(1, 1, 1, encabezados.length)
+    .setFontWeight("bold")
+    .setBackground("#4285f4")
+    .setFontColor("white");
+  hojaControl.setFrozenRows(1);
+  hojaControl.autoResizeColumns(1, encabezados.length);
+  
+  return hojaControl;
+}
+
+// Función para verificar si los encabezados son correctos
+function verificarEncabezadosControl(hoja) {
+  if (hoja.getLastRow() === 0) return false;
+  
+  const encabezadosActuales = hoja.getRange(1, 1, 1, 9).getValues()[0];
+  const encabezadosEsperados = [
+    "Número de Orden", 
+    "Estado Actual", 
+    "Fecha Último Envío", 
+    "Hora Último Envío", 
+    "Tipo de Notificación", 
+    "¿Retenida Notificada Hoy?", 
+    "¿Liberación Notificada Hoy?", 
+    "Cliente", 
+    "Zona"
+  ];
+  
+  // Verificar si los encabezados coinciden
+  for (let i = 0; i < encabezadosEsperados.length; i++) {
+    if (encabezadosActuales[i] !== encabezadosEsperados[i]) {
+      return false;
+    }
+  }
+  
+  return true;
+}
+
+// ================== FUNCIÓN DE ESTADÍSTICAS MEJORADA ==================
+
+function verEstadisticas() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const hojaControl = ss.getSheetByName("ControlEnvios");
+  
+  if (!hojaControl || hojaControl.getLastRow() <= 1) {
+    SpreadsheetApp.getUi().alert('No hay datos disponibles');
+    return;
+  }
+  
+  const datos = hojaControl.getDataRange().getValues();
+  const hoy = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy");
+  
+  let stats = {
+    total: 0,
+    retenidas: 0,
+    liberadas: 0,
+    enviadasHoyRetenida: 0,
+    enviadasHoyLiberada: 0,
+    totalConPruebas: datos.length - 1,
+    pruebasTotal: 0
+  };
+  
+  // Palabras clave que indican que es una prueba
+  const palabrasPrueba = ['PRUEBA', 'TEST', 'TESTING', 'DEMO'];
+  
+  for (let i = 1; i < datos.length; i++) {
+    const [orden, estado, fechaEnvio, horaEnvio, tipoMensaje, enviadaRetenida, enviadaLiberada] = datos[i];
+    
+    // Verificar si es una prueba
+    let esPrueba = false;
+    
+    // Verificar en el número de orden
+    if (orden) {
+      const ordenStr = String(orden).toUpperCase();
+      esPrueba = palabrasPrueba.some(palabra => ordenStr.includes(palabra));
+    }
+    
+    // Verificar en el tipo de mensaje
+    if (!esPrueba && tipoMensaje) {
+      const tipoStr = String(tipoMensaje).toUpperCase();
+      esPrueba = tipoStr.includes('PRUEBA') || tipoStr.includes('TEST');
+    }
+    
+    if (esPrueba) {
+      stats.pruebasTotal++;
+      continue; // Saltar las pruebas para las estadísticas reales
+    }
+    
+    // Contar solo órdenes reales
+    stats.total++;
+    
+    if (estado === 'RETENIDA') stats.retenidas++;
+    if (estado === 'LIBERADA') stats.liberadas++;
+    
+    // Estadísticas de hoy (solo órdenes reales)
+    if (fechaEnvio === hoy && enviadaRetenida === "SI") stats.enviadasHoyRetenida++;
+    if (fechaEnvio === hoy && enviadaLiberada === "SI") stats.enviadasHoyLiberada++;
+  }
+  
+  // Obtener estadísticas adicionales de las hojas
+  const hojaOrdenes = ss.getSheetByName("OrdenesRetenidas");
+  const hojaLogs = ss.getSheetByName("LogsLiberaciones");
+  
+  let ordenesRetenidasActuales = 0;
+  let ordenesLiberadasHistorico = 0;
+  
+  if (hojaOrdenes && hojaOrdenes.getLastRow() > 1) {
+    ordenesRetenidasActuales = hojaOrdenes.getLastRow() - 1; // Menos encabezado
+  }
+  
+  if (hojaLogs && hojaLogs.getLastRow() > 1) {
+    // Contar liberaciones únicas (puede haber duplicados)
+    const datosLogs = hojaLogs.getDataRange().getValues();
+    const ordenesUnicas = new Set();
+    
+    for (let i = 1; i < datosLogs.length; i++) {
+      const ordenNum = datosLogs[i][0];
+      if (ordenNum && !String(ordenNum).includes('←')) { // Excluir separadores
+        ordenesUnicas.add(ordenNum);
+      }
+    }
+    ordenesLiberadasHistorico = ordenesUnicas.size;
+  }
+  
+  // Mostrar estadísticas
+  SpreadsheetApp.getUi().alert(
+    '📊 ESTADÍSTICAS DEL SISTEMA',
+    '━━━━ ESTADO ACTUAL ━━━━\n' +
+    `Órdenes retenidas actualmente: ${ordenesRetenidasActuales}\n` +
+    `Órdenes liberadas (histórico): ${ordenesLiberadasHistorico}\n\n` +
+    
+    '━━━━ NOTIFICACIONES ENVIADAS ━━━━\n' +
+    `Total notificaciones (sin pruebas): ${stats.total}\n` +
+    `├─ Estado Retenida: ${stats.retenidas}\n` +
+    `└─ Estado Liberada: ${stats.liberadas}\n\n` +
+    
+    '━━━━ ACTIVIDAD DE HOY ━━━━\n' +
+    `Fecha: ${hoy}\n` +
+    `Retenciones notificadas: ${stats.enviadasHoyRetenida}\n` +
+    `Liberaciones notificadas: ${stats.enviadasHoyLiberada}\n\n` +
+    
+    '━━━━ INFORMACIÓN ADICIONAL ━━━━\n' +
+    `Pruebas realizadas: ${stats.pruebasTotal}\n` +
+    `Total registros (con pruebas): ${stats.totalConPruebas}`,
+    
+    SpreadsheetApp.getUi().ButtonSet.OK
+  );
+}
+
+// ================== FUNCIÓN ADICIONAL: VER ESTADÍSTICAS DETALLADAS ==================
+
+function verEstadisticasDetalladas() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+  
+  // Crear una nueva hoja temporal para el reporte
+  let hojaReporte = ss.getSheetByName("Reporte_Estadísticas");
+  if (hojaReporte) {
+    ss.deleteSheet(hojaReporte);
+  }
+  hojaReporte = ss.insertSheet("Reporte_Estadísticas");
+  
+  // Configurar encabezados
+  const encabezados = [
+    ["REPORTE DE ESTADÍSTICAS", "", "", "", ""],
+    ["Fecha de generación:", Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy HH:mm:ss"), "", "", ""],
+    ["", "", "", "", ""],
+    ["RESUMEN POR ZONA", "", "", "", ""],
+    ["Zona", "Órdenes Retenidas", "Órdenes Liberadas", "Total Notificaciones", "Última Actividad"]
+  ];
+  
+  hojaReporte.getRange(1, 1, encabezados.length, 5).setValues(encabezados);
+  
+  // Analizar datos por zona
+  const hojaControl = ss.getSheetByName("ControlEnvios");
+  const hojaOrdenes = ss.getSheetByName("OrdenesRetenidas");
+  const estadisticasPorZona = {};
+  
+  // Palabras clave de prueba
+  const palabrasPrueba = ['PRUEBA', 'TEST', 'TESTING', 'DEMO'];
+  
+  // Analizar órdenes retenidas actuales
+  if (hojaOrdenes && hojaOrdenes.getLastRow() > 1) {
+    const datosOrdenes = hojaOrdenes.getDataRange().getValues();
+    
+    for (let i = 1; i < datosOrdenes.length; i++) {
+      const zona = datosOrdenes[i][0];
+      const orden = String(datosOrdenes[i][2]);
+      
+      // Saltar pruebas
+      if (palabrasPrueba.some(palabra => orden.toUpperCase().includes(palabra))) continue;
+      
+      if (!estadisticasPorZona[zona]) {
+        estadisticasPorZona[zona] = {
+          retenidas: 0,
+          liberadas: 0,
+          totalNotificaciones: 0,
+          ultimaActividad: ""
+        };
+      }
+      estadisticasPorZona[zona].retenidas++;
+    }
+  }
+  
+  // Analizar historial de control
+  if (hojaControl && hojaControl.getLastRow() > 1) {
+    const datosControl = hojaControl.getDataRange().getValues();
+    
+    for (let i = 1; i < datosControl.length; i++) {
+      const [orden, estado, fechaEnvio, horaEnvio, tipoMensaje, , , , zona] = datosControl[i];
+      
+      // Saltar pruebas
+      const ordenStr = String(orden).toUpperCase();
+      const tipoStr = String(tipoMensaje).toUpperCase();
+      if (palabrasPrueba.some(palabra => ordenStr.includes(palabra)) || 
+          tipoStr.includes('PRUEBA') || tipoStr.includes('TEST')) {
+        continue;
+      }
+      
+      if (zona) {
+        if (!estadisticasPorZona[zona]) {
+          estadisticasPorZona[zona] = {
+            retenidas: 0,
+            liberadas: 0,
+            totalNotificaciones: 0,
+            ultimaActividad: ""
+          };
+        }
+        
+        estadisticasPorZona[zona].totalNotificaciones++;
+        
+        if (estado === 'LIBERADA') {
+          estadisticasPorZona[zona].liberadas++;
+        }
+        
+        // Actualizar última actividad
+        const fechaActividad = `${fechaEnvio} ${horaEnvio}`;
+        if (!estadisticasPorZona[zona].ultimaActividad || 
+            fechaActividad > estadisticasPorZona[zona].ultimaActividad) {
+          estadisticasPorZona[zona].ultimaActividad = fechaActividad;
+        }
+      }
+    }
+  }
+  
+  // Escribir datos en la hoja
+  const datosZonas = [];
+  for (const [zona, stats] of Object.entries(estadisticasPorZona)) {
+    datosZonas.push([
+      zona,
+      stats.retenidas,
+      stats.liberadas,
+      stats.totalNotificaciones,
+      stats.ultimaActividad
+    ]);
+  }
+  
+  if (datosZonas.length > 0) {
+    // Ordenar por zona
+    datosZonas.sort((a, b) => a[0].localeCompare(b[0]));
+    
+    hojaReporte.getRange(6, 1, datosZonas.length, 5).setValues(datosZonas);
+    
+    // Agregar totales
+    const filaTotal = 6 + datosZonas.length + 1;
+    hojaReporte.getRange(filaTotal, 1).setValue("TOTALES");
+    hojaReporte.getRange(filaTotal, 2).setFormula(`=SUM(B6:B${6 + datosZonas.length - 1})`);
+    hojaReporte.getRange(filaTotal, 3).setFormula(`=SUM(C6:C${6 + datosZonas.length - 1})`);
+    hojaReporte.getRange(filaTotal, 4).setFormula(`=SUM(D6:D${6 + datosZonas.length - 1})`);
+  }
+  
+  // Formato
+  hojaReporte.getRange(1, 1, 1, 5).merge().setFontSize(16).setFontWeight("bold").setHorizontalAlignment("center");
+  hojaReporte.getRange(4, 1, 1, 5).merge().setFontSize(12).setFontWeight("bold").setBackground("#e8f0fe");
+  hojaReporte.getRange(5, 1, 1, 5).setFontWeight("bold").setBackground("#4285f4").setFontColor("white");
+  
+  if (datosZonas.length > 0) {
+    hojaReporte.getRange(6 + datosZonas.length + 1, 1, 1, 5).setFontWeight("bold").setBackground("#f8f9fa");
+  }
+  
+  hojaReporte.autoResizeColumns(1, 5);
+  hojaReporte.setFrozenRows(5);
+  
+  // Activar la hoja
+  hojaReporte.activate();
+  
+  ui.alert(
+    '📊 Reporte Generado',
+    'Se ha creado la hoja "Reporte_Estadísticas" con el análisis detallado por zona.\n\n' +
+    'Las órdenes de prueba han sido excluidas del reporte.',
+    ui.ButtonSet.OK
+  );
+}
+
+// ================== FUNCIÓN PARA GESTIONAR CONTACTOS ==================
+
+function gestionarContactos() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const hojaContactos = ss.getSheetByName("ContactosZonas");
+  
+  if (!hojaContactos) {
+    const respuesta = ui.alert(
+      'Hoja de Contactos no encontrada',
+      '¿Deseas crear la hoja de contactos ahora?',
+      ui.ButtonSet.YES_NO
+    );
+    
+    if (respuesta === ui.Button.YES) {
+      configuracionInicial();
+    }
+    return;
+  }
+  
+  // Mostrar estadísticas de contactos
+  const datos = hojaContactos.getDataRange().getValues();
+  let activos = 0;
+  let inactivos = 0;
+  
+  for (let i = 1; i < datos.length; i++) {
+    if (datos[i][4] === "SI") activos++;
+    else inactivos++;
+  }
+  
+  ui.alert(
+    '📱 Gestión de Contactos',
+    `Total de zonas: ${datos.length - 1}\n` +
+    `Contactos activos: ${activos}\n` +
+    `Contactos inactivos: ${inactivos}\n\n` +
+    'Para editar contactos, ve a la hoja "ContactosZonas"',
+    ui.ButtonSet.OK
+  );
+}
+
+// ================== FUNCIONES DE PRUEBA PARA ÓRDENES LIBERADAS ==================
+
+function probarLiberacionOrdenExistente() {
+  const ui = SpreadsheetApp.getUi();
+  
+  // Solicitar número de orden
+  const response = ui.prompt(
+    'Prueba de Liberación',
+    'Ingresa el número de una orden que actualmente esté RETENIDA:',
+    ui.ButtonSet.OK_CANCEL
+  );
+  
+  if (response.getSelectedButton() !== ui.Button.OK) return;
+  
+  const ordenNum = response.getResponseText().trim();
+  if (!ordenNum) {
+    ui.alert('Error', 'Debes ingresar un número de orden', ui.ButtonSet.OK);
+    return;
+  }
+  
+  // Buscar la orden en la hoja de órdenes retenidas
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const hojaOrdenes = ss.getSheetByName("OrdenesRetenidas");
+  
+  if (!hojaOrdenes) {
+    ui.alert('Error', 'No se encontró la hoja OrdenesRetenidas', ui.ButtonSet.OK);
+    return;
+  }
+  
+  const datos = hojaOrdenes.getDataRange().getValues();
+  let ordenEncontrada = null;
+  
+  for (let i = 1; i < datos.length; i++) {
+    if (String(datos[i][2]) === String(ordenNum)) { // Columna C es la orden
+      ordenEncontrada = {
+        zona: datos[i][0],
+        cliente: datos[i][1],
+        orden: datos[i][2],
+        fecha: datos[i][3],
+        observacion: datos[i][4]
+      };
+      break;
+    }
+  }
+  
+  if (!ordenEncontrada) {
+    ui.alert('Error', `No se encontró la orden ${ordenNum} en las órdenes retenidas`, ui.ButtonSet.OK);
+    return;
+  }
+  
+  // Confirmar envío
+  const confirmar = ui.alert(
+    'Confirmar Prueba',
+    '¿Enviar notificación de LIBERACIÓN para?\n\n' +
+    `Orden: ${ordenEncontrada.orden}\n` +
+    `Cliente: ${ordenEncontrada.cliente}\n` +
+    `Zona: ${ordenEncontrada.zona}\n\n` +
+    'NOTA: Esto es solo una prueba, la orden seguirá retenida en el sistema.',
+    ui.ButtonSet.YES_NO
+  );
+  
+  if (confirmar !== ui.Button.YES) return;
+  
+  // Preparar y enviar
+  const ordenesParaEnviar = [{
+    orden: ordenEncontrada.orden,
+    tipo: 'Orden liberada (PRUEBA)',
+    datos: {
+      zona: ordenEncontrada.zona,
+      cliente: ordenEncontrada.cliente,
+      fecha: ordenEncontrada.fecha,
+      observacion: ordenEncontrada.observacion.replace(`${ordenEncontrada.orden}: `, '')
+    },
+    mensaje: '✅ ORDEN LIBERADA (PRUEBA)',
+    esLiberada: true
+  }];
+  
+  const sheets = {
+    control: ss.getSheetByName("ControlEnvios") || ss.insertSheet("ControlEnvios")
+  };
+  
+  const controlData = {};
+  const fechaHoy = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy");
+  const horaActual = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "HH:mm:ss");
+  
+  enviarNotificacionesWhatsApp(ordenesParaEnviar, sheets, controlData, fechaHoy, horaActual);
+  
+  ui.alert(
+    '✅ Prueba Enviada',
+    `Se envió la notificación de liberación para la orden ${ordenNum}.\n\n` +
+    `Revisa WhatsApp del representante de ${ordenEncontrada.zona}.`,
+    ui.ButtonSet.OK
+  );
+}
+
+function probarNotificacionOrdenLiberada() {
+  const ui = SpreadsheetApp.getUi();
+  
+  // Solicitar número de orden
+  const response = ui.prompt(
+    'Prueba de Notificación de Liberación',
+    'Ingresa el número de una orden (puede estar retenida o liberada):',
+    ui.ButtonSet.OK_CANCEL
+  );
+  
+  if (response.getSelectedButton() !== ui.Button.OK) return;
+  
+  const ordenNum = response.getResponseText().trim();
+  if (!ordenNum) {
+    ui.alert('Error', 'Debes ingresar un número de orden', ui.ButtonSet.OK);
+    return;
+  }
+  
+  // Buscar la orden en CUALQUIER hoja (retenidas o logs)
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const hojaOrdenes = ss.getSheetByName("OrdenesRetenidas");
+  const hojaLogs = ss.getSheetByName("LogsLiberaciones");
+  
+  let ordenEncontrada = null;
+  let fuenteDatos = "";
+  
+  // Primero buscar en órdenes retenidas
+  if (hojaOrdenes) {
+    const datos = hojaOrdenes.getDataRange().getValues();
+    for (let i = 1; i < datos.length; i++) {
+      if (String(datos[i][2]) === String(ordenNum)) { // Columna C es la orden
+        ordenEncontrada = {
+          zona: datos[i][0],
+          cliente: datos[i][1],
+          orden: datos[i][2],
+          fecha: datos[i][3],
+          observacion: datos[i][4].replace(`${datos[i][2]}: `, ''),
+          estado: datos[i][5]
+        };
+        fuenteDatos = "OrdenesRetenidas";
+        break;
+      }
+    }
+  }
+  
+  // Si no se encontró, buscar en logs de liberaciones
+  if (!ordenEncontrada && hojaLogs) {
+    const datosLogs = hojaLogs.getDataRange().getValues();
+    for (let i = 1; i < datosLogs.length; i++) {
+      if (String(datosLogs[i][0]) === String(ordenNum)) { // Columna A es OrderNum
+        ordenEncontrada = {
+          zona: datosLogs[i][1],
+          cliente: datosLogs[i][2],
+          orden: datosLogs[i][0],
+          fecha: datosLogs[i][3],
+          observacion: datosLogs[i][7],
+          estado: datosLogs[i][8]
+        };
+        fuenteDatos = "LogsLiberaciones";
+        break;
+      }
+    }
+  }
+  
+  if (!ordenEncontrada) {
+    ui.alert('Error', `No se encontró la orden ${ordenNum} en ninguna hoja`, ui.ButtonSet.OK);
+    return;
+  }
+  
+  // Confirmar envío
+  const confirmar = ui.alert(
+    'Confirmar Prueba de Notificación',
+    '¿Enviar notificación de LIBERACIÓN para?\n\n' +
+    `Orden: ${ordenEncontrada.orden}\n` +
+    `Cliente: ${ordenEncontrada.cliente}\n` +
+    `Zona: ${ordenEncontrada.zona}\n` +
+    `Estado actual: ${ordenEncontrada.estado}\n` +
+    `Encontrada en: ${fuenteDatos}\n\n` +
+    'NOTA: Esto es solo una prueba de notificación.',
+    ui.ButtonSet.YES_NO
+  );
+  
+  if (confirmar !== ui.Button.YES) return;
+  
+  // Preparar y enviar
+  const ordenesParaEnviar = [{
+    orden: ordenEncontrada.orden,
+    tipo: 'Orden liberada (PRUEBA DE NOTIFICACIÓN)',
+    datos: {
+      zona: ordenEncontrada.zona,
+      cliente: ordenEncontrada.cliente,
+      fecha: ordenEncontrada.fecha,
+      observacion: ordenEncontrada.observacion
+    },
+    mensaje: '✅ ORDEN LIBERADA (PRUEBA DE NOTIFICACIÓN)',
+    esLiberada: true
+  }];
+  
+  const sheets = {
+    control: ss.getSheetByName("ControlEnvios") || ss.insertSheet("ControlEnvios")
+  };
+  
+  const controlData = {};
+  const fechaHoy = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy");
+  const horaActual = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "HH:mm:ss");
+  
+  // Llamar a la función de envío existente
+  enviarNotificacionesWhatsApp(ordenesParaEnviar, sheets, controlData, fechaHoy, horaActual);
+  
+  ui.alert(
+    '✅ Prueba Enviada',
+    `Se envió la notificación de liberación para la orden ${ordenNum}.\n\n` +
+    `Zona: ${ordenEncontrada.zona}\n` +
+    'Representante recibirá el mensaje en WhatsApp.',
+    ui.ButtonSet.OK
+  );
+}
+
+// ================== FUNCIONES DE PRUEBA PARA ÓRDENES RETENIDAS ==================
+
+function probarNotificacionOrdenRetenida() {
+  const ui = SpreadsheetApp.getUi();
+  
+  // Solicitar número de orden
+  const response = ui.prompt(
+    'Prueba de Notificación de Retención',
+    'Ingresa el número de una orden retenida:',
+    ui.ButtonSet.OK_CANCEL
+  );
+  
+  if (response.getSelectedButton() !== ui.Button.OK) return;
+  
+  const ordenNum = response.getResponseText().trim();
+  if (!ordenNum) {
+    ui.alert('Error', 'Debes ingresar un número de orden', ui.ButtonSet.OK);
+    return;
+  }
+  
+  // Buscar la orden en la hoja de órdenes retenidas
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const hojaOrdenes = ss.getSheetByName("OrdenesRetenidas");
+  
+  if (!hojaOrdenes) {
+    ui.alert('Error', 'No se encontró la hoja OrdenesRetenidas', ui.ButtonSet.OK);
+    return;
+  }
+  
+  const datos = hojaOrdenes.getDataRange().getValues();
+  let ordenEncontrada = null;
+  
+  for (let i = 1; i < datos.length; i++) {
+    if (String(datos[i][2]) === String(ordenNum)) { // Columna C es la orden
+      ordenEncontrada = {
+        zona: datos[i][0],
+        cliente: datos[i][1],
+        orden: datos[i][2],
+        fecha: datos[i][3],
+        observacion: datos[i][4].replace(`${datos[i][2]}: `, ''),
+        estado: datos[i][5]
+      };
+      break;
+    }
+  }
+  
+  if (!ordenEncontrada) {
+    ui.alert('Error', `No se encontró la orden ${ordenNum} en las órdenes retenidas`, ui.ButtonSet.OK);
+    return;
+  }
+  
+  // Preguntar qué tipo de notificación enviar
+  const tipoNotificacion = ui.alert(
+    'Tipo de Notificación',
+    `Orden: ${ordenEncontrada.orden}\n` +
+    `Cliente: ${ordenEncontrada.cliente}\n\n` +
+    '¿Qué tipo de notificación quieres enviar?\n\n' +
+    'YES = Nueva Orden Retenida\n' +
+    'NO = Orden que Volvió a Retención',
+    ui.ButtonSet.YES_NO_CANCEL
+  );
+  
+  if (tipoNotificacion === ui.Button.CANCEL) return;
+  
+  let tipoMensaje, mensajeExtra;
+  if (tipoNotificacion === ui.Button.YES) {
+    tipoMensaje = 'Nueva orden retenida (PRUEBA)';
+    mensajeExtra = '🆕 NUEVA ORDEN RETENIDA (PRUEBA)';
+  } else {
+    tipoMensaje = 'Orden volvió a retención (PRUEBA)';
+    mensajeExtra = '⚠️ ORDEN VOLVIÓ A RETENCIÓN (PRUEBA)';
+  }
+  
+  // Confirmar envío
+  const confirmar = ui.alert(
+    'Confirmar Prueba de Notificación',
+    '¿Enviar notificación de RETENCIÓN para?\n\n' +
+    `Orden: ${ordenEncontrada.orden}\n` +
+    `Cliente: ${ordenEncontrada.cliente}\n` +
+    `Zona: ${ordenEncontrada.zona}\n` +
+    `Tipo: ${mensajeExtra}\n\n` +
+    'NOTA: Esto es solo una prueba de notificación.',
+    ui.ButtonSet.YES_NO
+  );
+  
+  if (confirmar !== ui.Button.YES) return;
+  
+  // Preparar y enviar
+  const ordenesParaEnviar = [{
+    orden: ordenEncontrada.orden,
+    tipo: tipoMensaje,
+    datos: {
+      zona: ordenEncontrada.zona,
+      cliente: ordenEncontrada.cliente,
+      fecha: ordenEncontrada.fecha,
+      observacion: ordenEncontrada.observacion
+    },
+    mensaje: mensajeExtra,
+    esLiberada: false
+  }];
+  
+  const sheets = {
+    control: ss.getSheetByName("ControlEnvios") || ss.insertSheet("ControlEnvios")
+  };
+  
+  const controlData = {};
+  const fechaHoy = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy");
+  const horaActual = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "HH:mm:ss");
+  
+  // Llamar a la función de envío existente
+  enviarNotificacionesWhatsApp(ordenesParaEnviar, sheets, controlData, fechaHoy, horaActual);
+  
+  ui.alert(
+    '✅ Prueba Enviada',
+    `Se envió la notificación de retención para la orden ${ordenNum}.\n\n` +
+    `Tipo: ${mensajeExtra}\n` +
+    `Zona: ${ordenEncontrada.zona}\n` +
+    'Representante recibirá el mensaje en WhatsApp.',
+    ui.ButtonSet.OK
+  );
+}
+
+// FUNCIÓN ALTERNATIVA: Probar con datos personalizados
+function probarNotificacionRetenidaPersonalizada() {
+  const ui = SpreadsheetApp.getUi();
+  
+  // Solicitar datos
+  const ordenResponse = ui.prompt('Datos de Prueba', 'Número de orden:', ui.ButtonSet.OK_CANCEL);
+  if (ordenResponse.getSelectedButton() !== ui.Button.OK) return;
+  const ordenNum = ordenResponse.getResponseText().trim();
+  
+  const clienteResponse = ui.prompt('Datos de Prueba', 'Nombre del cliente:', ui.ButtonSet.OK_CANCEL);
+  if (clienteResponse.getSelectedButton() !== ui.Button.OK) return;
+  const cliente = clienteResponse.getResponseText().trim();
+  
+  const zonaResponse = ui.prompt('Datos de Prueba', 'Zona (debe existir en ContactosZonas):', ui.ButtonSet.OK_CANCEL);
+  if (zonaResponse.getSelectedButton() !== ui.Button.OK) return;
+  const zona = zonaResponse.getResponseText().trim();
+  
+  const observacionResponse = ui.prompt('Datos de Prueba', 'Motivo de retención:', ui.ButtonSet.OK_CANCEL);
+  if (observacionResponse.getSelectedButton() !== ui.Button.OK) return;
+  const observacion = observacionResponse.getResponseText().trim() || "PRUEBA DEL SISTEMA";
+  
+  // Confirmar envío
+  const confirmar = ui.alert(
+    'Confirmar Prueba Personalizada',
+    '¿Enviar notificación de RETENCIÓN con estos datos?\n\n' +
+    `Orden: ${ordenNum}\n` +
+    `Cliente: ${cliente}\n` +
+    `Zona: ${zona}\n` +
+    `Motivo: ${observacion}\n\n` +
+    'NOTA: Esto es solo una prueba.',
+    ui.ButtonSet.YES_NO
+  );
+  
+  if (confirmar !== ui.Button.YES) return;
+  
+  // Preparar y enviar
+  const fecha = Utilities.formatDate(new Date(), "GMT-5", "dd/MM/yyyy");
+  const ordenesParaEnviar = [{
+    orden: ordenNum,
+    tipo: 'Nueva orden retenida (PRUEBA PERSONALIZADA)',
+    datos: {
+      zona: zona,
+      cliente: cliente,
+      fecha: fecha,
+      observacion: observacion
+    },
+    mensaje: '🆕 NUEVA ORDEN RETENIDA (PRUEBA PERSONALIZADA)',
+    esLiberada: false
+  }];
+  
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheets = {
+    control: ss.getSheetByName("ControlEnvios") || ss.insertSheet("ControlEnvios")
+  };
+  
+  const controlData = {};
+  const fechaHoy = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy");
+  const horaActual = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "HH:mm:ss");
+  
+  enviarNotificacionesWhatsApp(ordenesParaEnviar, sheets, controlData, fechaHoy, horaActual);
+  
+  ui.alert(
+    '✅ Prueba Personalizada Enviada',
+    `Se envió la notificación de retención.\n\n` +
+    `Revisa WhatsApp del representante de ${zona}.`,
+    ui.ButtonSet.OK
+  );
+}
+
+// ================== MENÚ PERSONALIZADO ACTUALIZADO ==================
+
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  
+  ui.createMenu('🔧 Sistema de Órdenes')
+    .addItem('⚙️ Configurar Triggers Automáticos', 'configurarTriggersDiarios')
+    .addItem('📊 Ver Estadísticas', 'verEstadisticas')
+    .addItem('📈 Ver Estadísticas Detalladas', 'verEstadisticasDetalladas')
+    .addItem('📱 Gestionar Contactos', 'gestionarContactos')
+    .addSeparator()
+    .addSubMenu(ui.createMenu('🧪 Pruebas de Notificaciones')
+      .addItem('📋 Probar Retención (Orden Existente)', 'probarNotificacionOrdenRetenida')
+      .addItem('✏️ Probar Retención (Datos Personalizados)', 'probarNotificacionRetenidaPersonalizada')
+      .addSeparator()
+      .addItem('✅ Probar Liberación (Solo Retenidas)', 'probarLiberacionOrdenExistente')
+      .addItem('🔔 Probar Liberación (Cualquier Orden)', 'probarNotificacionOrdenLiberada'))
+    .addSeparator()
+    .addSubMenu(ui.createMenu('🔧 Mantenimiento')
+      .addItem('🔄 Recrear hoja ControlEnvios', 'recrearControlEnvios')
+      .addItem('📝 Actualizar formato ControlEnvios', 'actualizarDatosControlEnvios'))
+    .addToUi();
+}
+
+// ================== FUNCIONES DE MANTENIMIENTO ==================
+
+function recrearControlEnvios() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+  
+  // Confirmar acción
+  const respuesta = ui.alert(
+    '⚠️ Confirmación',
+    '¿Estás seguro de que quieres recrear la hoja ControlEnvios?\n\n' +
+    'Esto eliminará todos los datos actuales.',
+    ui.ButtonSet.YES_NO
+  );
+  
+  if (respuesta !== ui.Button.YES) return;
+  
+  // Eliminar hoja existente
+  const hojaVieja = ss.getSheetByName("ControlEnvios");
+  if (hojaVieja) {
+    ss.deleteSheet(hojaVieja);
+  }
+  
+  // Crear nueva hoja
+  const hojaControl = ss.insertSheet("ControlEnvios");
+  
+  // Encabezados en español
+  const encabezados = [
+    "Número de Orden", 
+    "Estado Actual", 
+    "Fecha Último Envío", 
+    "Hora Último Envío", 
+    "Tipo de Notificación", 
+    "¿Retenida Notificada Hoy?", 
+    "¿Liberación Notificada Hoy?", 
+    "Cliente", 
+    "Zona"
+  ];
+  
+  hojaControl.getRange(1, 1, 1, encabezados.length).setValues([encabezados]);
+  hojaControl.getRange(1, 1, 1, encabezados.length)
+    .setFontWeight("bold")
+    .setBackground("#4285f4")
+    .setFontColor("white");
+  hojaControl.setFrozenRows(1);
+  hojaControl.autoResizeColumns(1, encabezados.length);
+  
+  ui.alert(
+    '✅ Hoja Recreada',
+    'La hoja ControlEnvios ha sido recreada con formato en español.',
+    ui.ButtonSet.OK
+  );
+}
+
+function actualizarDatosControlEnvios() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+  const hoja = ss.getSheetByName("ControlEnvios");
+  
+  if (!hoja) {
+    ui.alert('Error', 'No se encontró la hoja ControlEnvios', ui.ButtonSet.OK);
+    return;
+  }
+  
+  // Actualizar encabezados
+  const encabezados = [
+    "Número de Orden", 
+    "Estado Actual", 
+    "Fecha Último Envío", 
+    "Hora Último Envío", 
+    "Tipo de Notificación", 
+    "¿Retenida Notificada Hoy?", 
+    "¿Liberación Notificada Hoy?", 
+    "Cliente", 
+    "Zona"
+  ];
+  
+  // Obtener datos actuales
+  const lastRow = hoja.getLastRow();
+  const lastCol = hoja.getLastColumn();
+  
+  if (lastRow > 1 && lastCol >= 7) {
+    const datos = hoja.getRange(2, 1, lastRow - 1, lastCol).getValues();
+    const datosActualizados = [];
+    
+    for (let i = 0; i < datos.length; i++) {
+      const fila = datos[i];
+      
+      // Convertir valores
+      const estadoActual = fila[1] || "RETENIDA";
+      const fechaEnvio = fila[2] ? Utilities.formatDate(new Date(fila[2]), Session.getScriptTimeZone(), "dd/MM/yyyy") : "";
+      const horaEnvio = fila[3] || "";
+      
+      // Traducir tipo de mensaje
+      let tipoNotificacion = fila[4] || "";
+      if (tipoNotificacion.includes("NUEVA_RETENIDA")) {
+        tipoNotificacion = "Nueva orden retenida";
+      } else if (tipoNotificacion.includes("VOLVIO_RETENIDA")) {
+        tipoNotificacion = "Orden volvió a retención";
+      } else if (tipoNotificacion.includes("REPORTE_DIARIO")) {
+        tipoNotificacion = "Reporte diario 7:00 AM";
+      } else if (tipoNotificacion.includes("LIBERADA")) {
+        tipoNotificacion = "Orden liberada";
+      }
+      
+      // Convertir TRUE/FALSE a SI/NO
+      const retenidaNotificada = (fila[5] === true || fila[5] === "TRUE") ? "SI" : "NO";
+      const liberadaNotificada = (fila[6] === true || fila[6] === "TRUE") ? "SI" : "NO";
+      
+      // Agregar cliente y zona si no existen
+      const cliente = fila[7] || "";
+      const zona = fila[8] || "";
+      
+      datosActualizados.push([
+        fila[0], // Número de orden
+        estadoActual,
+        fechaEnvio,
+        horaEnvio,
+        tipoNotificacion,
+        retenidaNotificada,
+        liberadaNotificada,
+        cliente,
+        zona
+      ]);
+    }
+    
+    // Limpiar hoja y escribir datos actualizados
+    hoja.clear();
+    hoja.getRange(1, 1, 1, encabezados.length).setValues([encabezados]);
+    
+    if (datosActualizados.length > 0) {
+      hoja.getRange(2, 1, datosActualizados.length, encabezados.length).setValues(datosActualizados);
+    }
+  } else {
+    // Solo actualizar encabezados si no hay datos
+    hoja.getRange(1, 1, 1, encabezados.length).setValues([encabezados]);
+  }
+  
+  // Aplicar formato
+  hoja.getRange(1, 1, 1, encabezados.length)
+    .setFontWeight("bold")
+    .setBackground("#4285f4")
+    .setFontColor("white");
+  hoja.setFrozenRows(1);
+  
+  // Aplicar formato condicional si hay datos
+  if (lastRow > 1) {
+    const rangoEstado = hoja.getRange(2, 2, lastRow - 1, 1);
+    
+    // Limpiar reglas existentes
+    hoja.clearConditionalFormatRules();
+    
+    // Regla para RETENIDA (rojo)
+    const reglaRetenida = SpreadsheetApp.newConditionalFormatRule()
+      .whenTextEqualTo('RETENIDA')
+      .setBackground('#ffcdd2')
+      .setFontColor('#c62828')
+      .setRanges([rangoEstado])
+      .build();
+    
+    // Regla para LIBERADA (verde)
+    const reglaLiberada = SpreadsheetApp.newConditionalFormatRule()
+      .whenTextEqualTo('LIBERADA')
+      .setBackground('#c8e6c9')
+      .setFontColor('#2e7d32')
+      .setRanges([rangoEstado])
+      .build();
+    
+    hoja.setConditionalFormatRules([reglaRetenida, reglaLiberada]);
+  }
+  
+  hoja.autoResizeColumns(1, encabezados.length);
+  
+  ui.alert(
+    '✅ Formato Actualizado',
+    'La hoja ControlEnvios ha sido actualizada al formato español.\n\n' +
+    'Los datos se han conservado y convertido.',
+    ui.ButtonSet.OK
+  );
+}
