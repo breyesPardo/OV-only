@@ -649,7 +649,7 @@ function enviarNotificaciones(ordenesParaEnviar, sheets, controlData, fechaHoy, 
       "4": datos.zona,
       "5": representante,
       "6": datos.observacion,
-      "7": numeroWhatsApp  // Agregar número de WhatsApp para el enlace
+      "7": "3103149259"  // Agregar número de WhatsApp para el enlace
     } : {
       "1": fechaReporte,
       "2": representante,
@@ -657,7 +657,7 @@ function enviarNotificaciones(ordenesParaEnviar, sheets, controlData, fechaHoy, 
       "4": datos.cliente,
       "5": `${mensaje} 🔹 Orden: ${orden} - ${procesarFecha(datos.fecha)}`,
       "6": `📄 ${orden}: ${datos.observacion}`,
-      "7": numeroWhatsApp  // Agregar número de WhatsApp para el enlace
+      "7": "3103149259"  // Agregar número de WhatsApp para el enlace
     };
     
     // Logs de depuración para órdenes liberadas
