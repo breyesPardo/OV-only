@@ -1,0 +1,592 @@
+// ================== CONFIGURACIÓN ==================
+const C = {
+  H: {
+    o: {n:"OrdenesRetenidas",h:["Zona","Cliente","Órden","Fecha","Observación","Estado","Motivo Retención"]},
+    l: {n:"LogsLiberaciones",h:["OrderNum","Zona","Cliente","Fecha Liberación","Hora Liberación","UsuarioID","Nombre Usuario","Observaciones","Estado"]},
+    c: {n:"ControlEnvios",h:["Número de Orden","Estado Actual","Fecha Último Envío","Hora Último Envío","Tipo de Notificación","¿Retenida Notificada Hoy?","¿Liberación Notificada Hoy?","Cliente","Zona"]},
+    x: {n:"ContactosZonas",h:["Zona","Nombre Representante","WhatsApp","Email","Activo"]}
+  }
+};
+
+// ================== UTILIDADES ==================
+const U = {
+  gs: (n,h,c=1) => {
+    const s = SpreadsheetApp.getActiveSpreadsheet();
+    let x = s.getSheetByName(n);
+    if (!x && c) {
+      x = s.insertSheet(n);
+      if (h) {
+        x.getRange(1,1,1,h.length).setValues([h]).setFontWeight("bold").setBackground("#4285f4").setFontColor("white");
+        x.setFrozenRows(1);
+        x.autoResizeColumns(1,h.length);
+      }
+    }
+    return x;
+  },
+  fd: (f,m="dd/MM/yyyy") => {
+    if (!f) return "Sin fecha";
+    try {
+      const d = f instanceof Date ? f : new Date(f);
+      return Utilities.formatDate(d,"America/Bogota",m);
+    } catch(e) {return String(f);}
+  },
+  hc: () => new Date(new Date().toLocaleString("en-US",{timeZone:"America/Bogota"})),
+  pf: f => {
+    if (!f) return "";
+    f = String(f);
+    if (/^\d{2}\/\d{2}\/\d{4}$/.test(f)) return f;
+    if (f.includes('T') || f.includes('-')) {
+      try {
+        const p = f.split('T')[0].split('-');
+        if (p.length === 3) return `${p[2].padStart(2,'0')}/${p[1].padStart(2,'0')}/${p[0]}`;
+      } catch(e) {}
+    }
+    return f;
+  },
+  nc: n => {
+    if (!n) return "Representante";
+    const p = n.trim().split(/\s+/);
+    if (p.length <= 2) return p.join(' ');
+    const x = ['de','del','la','las','los','da','do','dos'];
+    const m = p.slice(0,2).filter(z => !x.includes(z.toLowerCase()));
+    return m.length ? m.join(' ') : p.slice(0,2).join(' ');
+  },
+  a: (t,m) => SpreadsheetApp.getUi().alert(t,m,SpreadsheetApp.getUi().ButtonSet.OK),
+  gc: () => {
+    const s = PropertiesService.getScriptProperties();
+    return {
+      D: {u:s.getProperty('DB_URL'),n:s.getProperty('DB_USER'),p:s.getProperty('DB_PASS')},
+      A: {u:s.getProperty('API_URL'),t:s.getProperty('API_TOKEN'),c:s.getProperty('API_CHANNEL')}
+    };
+  },
+  ui: () => SpreadsheetApp.getUi(),
+  sp: () => PropertiesService.getScriptProperties()
+};
+
+// ================== SEGURIDAD ==================
+function verPropiedadesGuardadas() {
+  const p = U.sp().getKeys();
+  U.a('Credenciales Seguras', p.length ? 
+    `🔐 Credenciales guardadas:\n\n${p.map(x => `• ${x}`).join('\n')}\n\nNOTA: Los valores están encriptados y seguros.` : 
+    'No hay credenciales guardadas.\n\nEjecuta primero configurarCredencialesSeguras()');
+}
+
+function actualizarCredencial() {
+  const ui = U.ui(), sp = U.sp();
+  const v = ['DB_URL','DB_USER','DB_PASS','API_URL','API_TOKEN','API_CHANNEL'];
+  const r = ui.prompt('Actualizar Credencial',`Opciones disponibles:\n${v.map(x => `• ${x}`).join('\n')}\n\nEscribe el nombre de la credencial:`,ui.ButtonSet.OK_CANCEL);
+  if (r.getSelectedButton() !== ui.Button.OK) return;
+  const n = r.getResponseText().trim();
+  if (!v.includes(n)) return U.a('❌ Error','Nombre de credencial no válido.');
+  const x = ui.prompt('Nuevo Valor',`Ingresa el nuevo valor para ${n}:`,ui.ButtonSet.OK_CANCEL);
+  if (x.getSelectedButton() === ui.Button.OK) {
+    sp.setProperty(n,x.getResponseText());
+    U.a('✅ Éxito',`La credencial "${n}" ha sido actualizada.`);
+  }
+}
+
+function eliminarCredencial() {
+  const ui = U.ui(), sp = U.sp(), p = sp.getKeys();
+  if (!p.length) return U.a('Sin Credenciales','No hay credenciales guardadas.');
+  const r = ui.prompt('Eliminar Credencial',`Credenciales disponibles:\n${p.join('\n')}\n\nEscribe el nombre de la credencial a eliminar:`,ui.ButtonSet.OK_CANCEL);
+  if (r.getSelectedButton() === ui.Button.OK) {
+    const c = r.getResponseText().trim();
+    if (p.includes(c)) {
+      sp.deleteProperty(c);
+      U.a('✅ Éxito',`La credencial "${c}" ha sido eliminada.`);
+    } else U.a('❌ Error',`No se encontró la credencial "${c}".`);
+  }
+}
+
+// ================== CONFIGURACIÓN ==================
+function configuracionInicial() {
+  const h = U.gs(C.H.x.n,C.H.x.h);
+  if (h.getLastRow() === 1) U.a('✅ Hoja de Contactos Creada','Se ha creado la hoja "ContactosZonas".\n\nDebes agregar los contactos de cada zona con su número de WhatsApp antes de usar el sistema.');
+}
+
+function cargarContactosZonas() {
+  const h = U.gs(C.H.x.n);
+  if (!h) throw new Error("No se encontró la hoja ContactosZonas. Ejecuta configuracionInicial() primero.");
+  SpreadsheetApp.flush();
+  const d = h.getDataRange().getValues();
+  const zn = {}, zm = {};
+  d.slice(1).forEach(([z,n,w,e,a]) => {
+    const zl = String(z).trim(), nl = String(n).trim(), wl = String(w).trim().replace(/\D/g,'');
+    if (String(a).trim().toUpperCase() === "SI" && zl && wl) {
+      zn[zl] = wl;
+      zm[zl] = nl || "Representante sin asignar";
+    }
+  });
+  return {zonaANumero:zn,zonaANombre:zm};
+}
+
+// ================== TRIGGERS ==================
+function ct(t='c') {
+  configuracionInicial();
+  ScriptApp.getProjectTriggers().forEach(x => ScriptApp.deleteTrigger(x));
+  ScriptApp.newTrigger('rd').timeBased().atHour(7).everyDays(1).create();
+  ScriptApp.newTrigger(t === 'l' ? 'vchl' : 'vc').timeBased().everyMinutes(5).create();
+  U.a('✅ Sistema Configurado',`El sistema enviará automáticamente:\n\n• 7:00 AM: Todas las órdenes retenidas (reporte diario)\n• Cada 5 minutos: Verificación de cambios\n\nNOTA: Las ${t === 'l' ? 'verificaciones solo funcionan en horario laboral' : 'verificación de cambios funcionan las 24 horas'}`);
+}
+
+const configurarTriggersDiarios = () => ct('24');
+const configurarTriggersHorarioLaboral = () => ct('l');
+const rd = () => aoc(1);
+const reporteDiario = rd;
+const vc = () => aoc(0);
+const verificarCambios = vc;
+
+function vchl() {
+  const h = U.hc().getHours();
+  if (h >= 8 && h < 18) vc();
+  else Logger.log(`Verificación omitida - fuera de horario laboral (${h}:00 hora Colombia)`);
+}
+const verificarCambiosHorarioLaboral = vchl;
+
+function configurarTriggerCompleto() {
+  const ui = U.ui();
+  const rh = ui.prompt('⏰ Hora del Reporte Diario','Ingresa la hora para el reporte diario (0-23):\n\nEjemplos: 7 = 7:00 AM, 13 = 1:00 PM',ui.ButtonSet.OK_CANCEL);
+  if (rh.getSelectedButton() !== ui.Button.OK) return;
+  const h = parseInt(rh.getResponseText().trim());
+  if (isNaN(h) || h < 0 || h > 23) return U.a('❌ Error','Hora inválida para el reporte diario');
+  const tv = ui.alert('🔄 Tipo de Verificación de Cambios','¿Cómo deseas configurar la verificación de cambios?\n\nYES = Cada 5 minutos (24 horas)\nNO = Cada 5 minutos (solo horario laboral 8AM-6PM)',ui.ButtonSet.YES_NO_CANCEL);
+  if (tv === ui.Button.CANCEL) return;
+  configuracionInicial();
+  ScriptApp.getProjectTriggers().forEach(x => ScriptApp.deleteTrigger(x));
+  ScriptApp.newTrigger('rd').timeBased().atHour(h).everyDays(1).create();
+  ScriptApp.newTrigger(tv === ui.Button.YES ? 'vc' : 'vchl').timeBased().everyMinutes(5).create();
+  const hf = h === 0 ? '12:00 AM' : h < 12 ? `${h}:00 AM` : h === 12 ? '12:00 PM' : `${h - 12}:00 PM`;
+  U.a('✅ Sistema Completamente Configurado',`Configuración aplicada:\n\n📊 Reporte diario: ${hf}\n🔄 Verificación de cambios: Cada 5 minutos (${tv === ui.Button.YES ? '24 horas' : 'horario laboral (8AM-6PM)'})\n\nEl sistema está listo para enviar notificaciones automáticas.`);
+}
+
+function verTriggersActivos() {
+  const t = ScriptApp.getProjectTriggers();
+  if (!t.length) return U.a('📅 Triggers Activos','No hay triggers configurados actualmente.');
+  const m = {'rd':'⏰ Reporte diario','vc':'🔄 Verificación cada 5 minutos (24/7)','vchl':'🔄 Verificación cada 5 minutos (horario laboral)'};
+  U.a('📅 Triggers Activos',`Total de triggers activos: ${t.length}\n\n${t.map((x,i) => `${i+1}. ${x.getHandlerFunction()}\n   ${m[x.getHandlerFunction()] || ''}`).join('\n\n')}`);
+}
+
+function detenerTriggers() {
+  const t = ScriptApp.getProjectTriggers();
+  t.forEach(x => ScriptApp.deleteTrigger(x));
+  U.a('🛑 Triggers Detenidos',`Se han eliminado ${t.length} triggers.\n\nEl sistema NO enviará notificaciones automáticas hasta que vuelvas a configurar los triggers.`);
+}
+
+// ================== FUNCIÓN PRINCIPAL ==================
+function aoc(eRD = 1) {
+  const c = U.gc();
+  if (!c.D.u || !c.D.n || !c.D.p) return U.a('❌ Error de Configuración','No se encontraron las credenciales de la base de datos.\n\nPor favor, ejecuta primero la función configurarCredencialesSeguras() desde el editor de scripts.');
+  
+  const s = {};
+  Object.entries(C.H).forEach(([k,v]) => {
+    if (k !== 'x') s[k] = U.gs(v.n,v.h);
+  });
+  
+  s.o.clear();
+  s.o.getRange(1,1,1,C.H.o.h.length).setValues([C.H.o.h]);
+  
+  const cd = {};
+  const hoy = U.hc();
+  const fh = U.fd(hoy);
+  
+  if (s.c.getLastRow() > 1) {
+    s.c.getDataRange().getValues().slice(1).forEach((r,i) => {
+      const [o,e,fe,he,tn,ehr,ehl,cl,z] = r;
+      cd[o] = {estado:e,fechaEnvio:fe,horaEnvio:he,tipoNotificacion:tn,
+        enviadoHoyRetenida:fe === fh ? ehr : "NO",
+        enviadoHoyLiberada:fe === fh ? ehl : "NO",
+        cliente:cl,zona:z,fila:i+2};
+    });
+  }
+  
+  const cn = Jdbc.getConnection(c.D.u,c.D.n,c.D.p);
+  const ora = new Map();
+  const ola = new Map();
+  
+  try {
+    const s1 = cn.createStatement();
+    const r1 = s1.executeQuery(`SELECT d.OrderHed_OrderNum,CONVERT(VARCHAR(10),d.OrderHed_OrderDate,103) AS Fecha,d.Zona,d.Customer_Name,d.ObservacionesRetencionCredito FROM EpicorRepTran.dbo.udvPortalCustDtlOV d WITH (NOLOCK) WHERE d.CreditoRetenido=1 AND d.OrderHed_VoidOrder=0 AND d.Zona!='Comercial Agrosoil' AND (d.CreditOverride IS NULL OR d.CreditOverride=0) ORDER BY d.OrderHed_OrderNum DESC`);
+    
+    const fo = [];
+    const ov = new Set();
+    
+    while (r1.next()) {
+      const o = r1.getString("OrderHed_OrderNum");
+      if (ov.has(o)) continue;
+      ov.add(o);
+      
+      const d = {
+        zona:r1.getString("Zona"),
+        cliente:r1.getString("Customer_Name"),
+        fecha:U.pf(r1.getString("Fecha")),
+        observacion:(r1.getString("ObservacionesRetencionCredito") || "SIN OBSERVACIONES").toUpperCase()
+      };
+      
+      fo.push([d.zona,d.cliente,o,d.fecha,`${o}: ${d.observacion}`,"RETENIDA","CRÉDITO"]);
+      ora.set(o,d);
+    }
+    s1.close();
+    
+    if (fo.length) s.o.getRange(2,1,fo.length,C.H.o.h.length).setValues(fo);
+    
+    const s2 = cn.createStatement();
+    const r2 = s2.executeQuery(`SELECT d.OrderHed_OrderNum,d.Zona,d.Customer_Name,CONVERT(VARCHAR(10),d.FechaLiberacionCredito,103) AS Fecha,CONVERT(VARCHAR(8),d.HoraLiberacionCredito,108) AS HoraLiberacionCredito,oh.CreditOverrideUserID,u.Name,d.ObservacionesRetencionCredito,CONVERT(VARCHAR(19),d.FechaLiberacionCredito,120) AS FechaHoraCompleta FROM EpicorRepTran.dbo.udvPortalCustDtlOV d WITH (NOLOCK) JOIN EpicorRepTran.dbo.OrderHed oh WITH (NOLOCK) ON d.OrderHed_OrderNum=oh.OrderNum AND d.OrderHed_Company=oh.Company LEFT JOIN EpicorTrain10.dbo.UserFile u WITH (NOLOCK) ON oh.CreditOverrideUserID=u.DcdUserID WHERE d.CreditoRetenido=0 AND d.OrderHed_VoidOrder=0 AND d.Zona!='Comercial Agrosoil' AND oh.CreditOverride=1 AND d.FechaLiberacionCredito IS NOT NULL AND d.FechaLiberacionCredito>=DATEADD(day,-1,GETDATE()) ORDER BY d.FechaLiberacionCredito DESC,d.HoraLiberacionCredito DESC`);
+    
+    const dl = [];
+    
+    while (r2.next()) {
+      const on = r2.getString("OrderHed_OrderNum");
+      const x = {
+        zona:r2.getString("Zona"),
+        cliente:r2.getString("Customer_Name"),
+        fecha:U.pf(r2.getString("Fecha") || ""),
+        hora:r2.getString("HoraLiberacionCredito") || "",
+        fechaHoraCompleta:r2.getString("FechaHoraCompleta") || "",
+        observacion:(r2.getString("ObservacionesRetencionCredito") || "SIN OBSERVACIONES").toUpperCase()
+      };
+      
+      dl.push([on,x.zona,x.cliente,x.fecha,x.hora,r2.getString("CreditOverrideUserID") || "",r2.getString("Name") || "",x.observacion,"LIBERADA"]);
+      ola.set(on,x);
+    }
+    s2.close();
+    
+    if (dl.length) {
+      const mt = U.fd(U.hc(),"dd/MM/yyyy HH:mm:ss");
+      const dc = [...dl,["","","","","","","","",`← Nuevas liberaciones: ${mt}`]];
+      s.l.insertRowsAfter(1,dc.length);
+      s.l.getRange(2,1,dc.length,C.H.l.h.length).setValues(dc);
+    }
+    
+  } finally {
+    cn.close();
+  }
+  
+  const ope = [];
+  const ha = U.fd(hoy,"HH:mm:ss");
+  
+  ora.forEach((d,o) => {
+    const c = cd[o];
+    let e = 0;
+    let t = '';
+    
+    if (!c) {e = 1; t = 'Nueva orden retenida';}
+    else if (c.estado === 'LIBERADA' && c.enviadoHoyRetenida === "NO") {e = 1; t = 'Orden volvió a retención';}
+    else if (eRD && c.enviadoHoyRetenida === "NO") {e = 1; t = 'Reporte diario 7:00 AM';}
+    
+    if (e) ope.push({orden:o,tipo:t,datos:d,esLiberada:0});
+  });
+  
+  ola.forEach((d,o) => {
+    const c = cd[o];
+    if ((c && c.estado === 'RETENIDA' && c.enviadoHoyLiberada === "NO") || !c) {
+      ope.push({orden:o,tipo:'Orden liberada',datos:d,esLiberada:1});
+    }
+  });
+  
+  ola.forEach((d,o) => {
+    if (!cd[o]) {
+      cd[o] = {estado:'LIBERADA',fechaEnvio:fh,horaEnvio:ha,tipoNotificacion:'Orden liberada',enviadoHoyRetenida:"NO",enviadoHoyLiberada:"NO",cliente:d.cliente,zona:d.zona,fila:null};
+    }
+  });
+  
+  en(ope,s,cd,fh,ha);
+  Logger.log(`✅ Proceso completo - ${eRD ? 'REPORTE DIARIO' : 'VERIFICACIÓN'} - Enviadas: ${ope.length}`);
+}
+const actualizarYEnviarOrdenesCredito = aoc;
+
+// ================== FUNCIÓN DE ENVÍO ==================
+function en(ope,s,cd,fh,ha) {
+  if (!ope.length) return;
+  
+  const c = U.gc();
+  if (!c.A.u || !c.A.t || !c.A.c) return U.a('❌ Error de Configuración','No se encontraron las credenciales de la API.\n\nPor favor, ejecuta primero la función configurarCredencialesSeguras() desde el editor de scripts.');
+  
+  const ct = cargarContactosZonas();
+  const fr = U.fd(U.hc(),"dd/MM/yyyy HH:mm:ss");
+  const ac = [];
+  
+  ope.slice(0,200).forEach(({orden:o,tipo:t,datos:d,esLiberada:el}) => {
+    const nw = ct.zonaANumero[d.zona] || "3182260739";
+    const rp = ct.zonaANombre[d.zona] || "Representante sin asignar";
+    const rc = U.nc(rp);
+    const tl = "57" + nw;
+    
+    const m = el ? '✅ ORDEN LIBERADA' : t.includes('Nueva') ? '🆕 NUEVA ORDEN RETENIDA' : t.includes('volvió') ? '⚠️ ORDEN VOLVIÓ A RETENCIÓN' : '📊 REPORTE DIARIO 7:00 AM';
+    
+    const p = el ? {
+      "1":o,"2":U.pf(d.fecha) + (d.hora ? " " + d.hora.split(' ')[0] : ""),
+      "3":d.cliente,"4":d.zona,"5":rc,"6":d.observacion,"7":"3103149259"
+    } : {
+      "1":fr,"2":rc,"3":d.zona,"4":d.cliente,
+      "5":`${m} 🔹 Orden: ${o} - ${U.pf(d.fecha)}`,
+      "6":`📄 ${o}: ${d.observacion}`,"7":"3103149259"
+    };
+    
+    try {
+      const r = UrlFetchApp.fetch(c.A.u,{
+        method:"post",
+        contentType:"application/json",
+        headers:{"access-token":c.A.t},
+        payload:JSON.stringify({
+          chatPlatform:"whatsapp",
+          chatChannelNumber:c.A.c,
+          platformContactId:tl,
+          ruleNameOrId:el ? "reporte_ordenes_liberadasv1" : "reporte_ordenes_retenidasv1",
+          params:p,
+          clientPayload:`orden_${t}_${o}_${Date.now()}`
+        }),
+        muteHttpExceptions:true
+      });
+      
+      const tx = r.getContentText();
+      const rd = JSON.parse(tx);
+      
+      if (tx.includes("success") || (rd.id && rd.problems === null)) {
+        const ce = cd[o];
+        ac.push({
+          orden:o,estado:el ? 'LIBERADA' : 'RETENIDA',
+          fechaEnvio:fh,horaEnvio:ha,tipoNotificacion:t,
+          enviadoHoyRetenida:!el ? "SI" : (ce?.enviadoHoyRetenida || "NO"),
+          enviadoHoyLiberada:el ? "SI" : (ce?.enviadoHoyLiberada || "NO"),
+          cliente:d.cliente,zona:d.zona,fila:ce?.fila
+        });
+      }
+    } catch(e) {
+      Logger.log(`❌ Error enviando ${o}: ${e.message}`);
+    }
+    
+    Utilities.sleep(1000);
+  });
+  
+  ac.forEach(a => {
+    const v = [a.orden,a.estado,a.fechaEnvio,a.horaEnvio,a.tipoNotificacion,a.enviadoHoyRetenida,a.enviadoHoyLiberada,a.cliente,a.zona];
+    if (a.fila) s.c.getRange(a.fila,1,1,9).setValues([v]);
+    else s.c.appendRow(v);
+  });
+  
+  if (s.c.getLastRow() > 1) {
+    const re = s.c.getRange(2,2,s.c.getLastRow()-1,1);
+    s.c.clearConditionalFormatRules();
+    
+    ['RETENIDA','LIBERADA'].forEach((e,i) => {
+      const r = SpreadsheetApp.newConditionalFormatRule()
+        .whenTextEqualTo(e)
+        .setBackground(i === 0 ? '#ffcdd2' : '#c8e6c9')
+        .setFontColor(i === 0 ? '#c62828' : '#2e7d32')
+        .setRanges([re])
+        .build();
+      s.c.setConditionalFormatRules([...s.c.getConditionalFormatRules(),r]);
+    });
+    
+    s.c.autoResizeColumns(1,9);
+  }
+}
+const enviarNotificaciones = en;
+
+// ================== ESTADÍSTICAS Y PRUEBAS ==================
+function verEstadisticas() {
+  const hc = U.gs(C.H.c.n,null,0);
+  if (!hc || hc.getLastRow() <= 1) return U.a('📊 Estadísticas','No hay datos disponibles');
+  
+  const d = hc.getDataRange().getValues().slice(1);
+  const h = U.fd(U.hc());
+  const pr = ['PRUEBA','TEST','TESTING','DEMO'];
+  
+  const s = d.reduce((a,r) => {
+    const [o,e,fe,,tm,er,el] = r;
+    const ep = pr.some(p => String(o).toUpperCase().includes(p) || String(tm).toUpperCase().includes(p));
+    
+    if (ep) a.pt++;
+    else {
+      a.t++;
+      if (e === 'RETENIDA') a.r++;
+      if (e === 'LIBERADA') a.l++;
+      if (fe === h && er === "SI") a.ehr++;
+      if (fe === h && el === "SI") a.ehl++;
+    }
+    return a;
+  }, {t:0,r:0,l:0,ehr:0,ehl:0,pt:0});
+  
+  const ho = U.gs(C.H.o.n,null,0);
+  const hl = U.gs(C.H.l.n,null,0);
+  
+  const ora = ho ? ho.getLastRow()-1 : 0;
+  const olh = hl ? new Set(hl.getDataRange().getValues().slice(1).filter(r => r[0] && !String(r[0]).includes('←')).map(r => r[0])).size : 0;
+  
+  U.a('📊 ESTADÍSTICAS DEL SISTEMA',
+    `━━━━ ESTADO ACTUAL ━━━━\nÓrdenes retenidas actualmente: ${ora}\nÓrdenes liberadas (histórico): ${olh}\n\n`+
+    `━━━━ NOTIFICACIONES ENVIADAS ━━━━\nTotal notificaciones (sin pruebas): ${s.t}\n├─ Estado Retenida: ${s.r}\n└─ Estado Liberada: ${s.l}\n\n`+
+    `━━━━ ACTIVIDAD DE HOY ━━━━\nFecha: ${h}\nRetenciones notificadas: ${s.ehr}\nLiberaciones notificadas: ${s.ehl}\n\n`+
+    `━━━━ INFORMACIÓN ADICIONAL ━━━━\nPruebas realizadas: ${s.pt}\nTotal registros: ${d.length}`);
+}
+
+function ep(t,el=0) {
+  const ui = U.ui();
+  const r = ui.prompt(`Prueba de ${el ? 'Liberación' : 'Retención'}`,'Ingresa el número de orden:',ui.ButtonSet.OK_CANCEL);
+  if (r.getSelectedButton() !== ui.Button.OK) return;
+  
+  const on = r.getResponseText().trim();
+  if (!on) return U.a('Error','Debes ingresar un número de orden');
+  
+  let oe = null;
+  for (const nh of [C.H.o.n,C.H.l.n]) {
+    const h = U.gs(nh,null,0);
+    if (!h) continue;
+    
+    const d = h.getDataRange().getValues();
+    const co = nh === C.H.o.n ? 2 : 0;
+    
+    for (let i = 1; i < d.length; i++) {
+      if (String(d[i][co]) === String(on)) {
+        oe = {
+          zona:d[i][nh === C.H.o.n ? 0 : 1],
+          cliente:d[i][nh === C.H.o.n ? 1 : 2],
+          orden:on,
+          fecha:d[i][3],
+          hora:nh === C.H.l.n ? (d[i][4] ? String(d[i][4]).split(' ')[0] : "") : "",
+          observacion:nh === C.H.o.n ? d[i][4].replace(`${on}: `,'') : d[i][7]
+        };
+        break;
+      }
+    }
+    if (oe) break;
+  }
+  
+  if (!oe) return U.a('Error',`No se encontró la orden ${on}`);
+  
+  if (ui.alert('Confirmar Prueba',
+    `¿Enviar notificación de ${el ? 'LIBERACIÓN' : 'RETENCIÓN'} para?\n\nOrden: ${oe.orden}\nCliente: ${oe.cliente}\nZona: ${oe.zona}\n\nNOTA: Esto es solo una prueba.`,
+    ui.ButtonSet.YES_NO) !== ui.Button.YES) return;
+  
+  const oenv = [{orden:oe.orden,tipo:`${el ? 'Orden liberada' : t} (PRUEBA)`,datos:oe,esLiberada:el}];
+  const sh = {c:U.gs(C.H.c.n,C.H.c.h)};
+  
+  en(oenv,sh,{},U.fd(U.hc()),U.fd(U.hc(),"HH:mm:ss"));
+  
+  U.a('✅ Prueba Enviada',`Se envió la notificación para la orden ${on}.\n\nRevisa WhatsApp del representante de ${oe.zona}.`);
+}
+const ejecutarPrueba = ep;
+
+function probarNotificacionOrdenRetenida() {
+  const ui = U.ui();
+  const tn = ui.alert('Tipo de Notificación','¿Qué tipo de notificación quieres enviar?\n\nYES = Nueva Orden Retenida\nNO = Orden que Volvió a Retención',ui.ButtonSet.YES_NO_CANCEL);
+  if (tn === ui.Button.CANCEL) return;
+  ep(tn === ui.Button.YES ? 'Nueva orden retenida' : 'Orden volvió a retención',0);
+}
+
+const probarLiberacionOrdenExistente = () => ep('Orden liberada',1);
+const probarNotificacionOrdenLiberada = () => ep('Orden liberada',1);
+
+function probarNotificacionRetenidaPersonalizada() {
+  const ui = U.ui();
+  const cm = ['Número de orden:','Nombre del cliente:','Zona (debe existir en ContactosZonas):','Motivo de retención:'];
+  const v = [];
+  
+  for (const c of cm) {
+    const r = ui.prompt('Datos de Prueba',c,ui.ButtonSet.OK_CANCEL);
+    if (r.getSelectedButton() !== ui.Button.OK) return;
+    v.push(r.getResponseText().trim());
+  }
+  
+  const [on,cl,z,ob] = v;
+  
+  if (ui.alert('Confirmar Prueba Personalizada',
+    `¿Enviar notificación de RETENCIÓN con estos datos?\n\nOrden: ${on}\nCliente: ${cl}\nZona: ${z}\nMotivo: ${ob || "PRUEBA DEL SISTEMA"}\n\nNOTA: Esto es solo una prueba.`,
+    ui.ButtonSet.YES_NO) !== ui.Button.YES) return;
+  
+  const oenv = [{
+    orden:on,tipo:'Nueva orden retenida (PRUEBA PERSONALIZADA)',
+    datos:{zona:z,cliente:cl,fecha:U.hc(),observacion:ob || "PRUEBA DEL SISTEMA"},
+    esLiberada:0
+  }];
+  
+  const sh = {c:U.gs(C.H.c.n,C.H.c.h)};
+  en(oenv,sh,{},U.fd(U.hc()),U.fd(U.hc(),"HH:mm:ss"));
+  
+  U.a('✅ Prueba Personalizada Enviada',`Se envió la notificación de retención.\n\nRevisa WhatsApp del representante de ${z}.`);
+}
+
+// ================== GESTIÓN DE CONTACTOS ==================
+function gestionarContactos() {
+  const hc = U.gs(C.H.x.n,null,0);
+  
+  if (!hc) {
+    if (U.ui().alert('Hoja de Contactos no encontrada','¿Deseas crear la hoja de contactos ahora?',U.ui().ButtonSet.YES_NO) === U.ui().Button.YES) configuracionInicial();
+    return;
+  }
+  
+  const d = hc.getDataRange().getValues().slice(1);
+  const s = d.reduce((a,r) => {a[r[4] === "SI" ? 'a' : 'i']++; return a;},{a:0,i:0});
+  const zsc = d.filter(r => r[4] !== "SI" || !r[2]).map(r => r[0]);
+  
+  let m = `Total de zonas: ${d.length}\nContactos activos: ${s.a}\nContactos inactivos: ${s.i}\n\n`;
+  if (zsc.length) {
+    m += `⚠️ ZONAS SIN CONTACTO ACTIVO:\n${zsc.slice(0,10).join('\n')}`;
+    if (zsc.length > 10) m += `\n... y ${zsc.length-10} más`;
+    m += '\n\n';
+  }
+  m += 'Para editar contactos, ve a la hoja "ContactosZonas"';
+  U.a('📱 Gestión de Contactos',m);
+}
+
+function verificarContactosZona() {
+  const ui = U.ui();
+  const r = ui.prompt('Verificar Contacto de Zona','Ingresa el nombre de la zona a verificar:',ui.ButtonSet.OK_CANCEL);
+  if (r.getSelectedButton() !== ui.Button.OK) return;
+  
+  const zb = r.getResponseText().trim();
+  if (!zb) return U.a('Error','Debes ingresar un nombre de zona');
+  
+  const hc = U.gs(C.H.x.n);
+  const d = hc.getDataRange().getValues();
+  
+  let dz = null;
+  for (let i = 1; i < d.length; i++) {
+    if (String(d[i][0]).toLowerCase().includes(zb.toLowerCase())) {
+      dz = {zona:d[i][0],nombre:d[i][1],whatsapp:d[i][2],email:d[i][3],activo:d[i][4]};
+      break;
+    }
+  }
+  
+  if (!dz) return U.a('Zona No Encontrada',`No se encontró ninguna zona que contenga "${zb}"`);
+  
+  U.a('Información de Contacto',
+    `📍 INFORMACIÓN DE LA ZONA\n\nZona: ${dz.zona}\nRepresentante: ${dz.nombre}\nWhatsApp: ${dz.whatsapp || 'NO CONFIGURADO'}\n`+
+    `Email: ${dz.email || 'No configurado'}\nEstado: ${dz.activo}\n\n`+
+    `${dz.activo === 'SI' && dz.whatsapp ? '✅ Esta zona ESTÁ recibiendo notificaciones' : '❌ Esta zona NO está recibiendo notificaciones'}`);
+}
+
+// ================== MENÚ ==================
+function onOpen() {
+  const ui = U.ui();
+  ui.createMenu('🔧 Sistema de Órdenes')
+    .addSubMenu(ui.createMenu('🔐 Seguridad')
+      .addItem('⚙️ Configurar Credenciales','configurarCredencialesSeguras')
+      .addItem('👁️ Ver Credenciales Guardadas','verPropiedadesGuardadas')
+      .addItem('✏️ Actualizar Credencial','actualizarCredencial')
+      .addItem('🗑️ Eliminar Credencial','eliminarCredencial'))
+    .addSeparator()
+    .addSubMenu(ui.createMenu('⚙️ Configurar Triggers')
+      .addItem('🚀 Configuración Completa Personalizada','configurarTriggerCompleto')
+      .addSeparator()
+      .addItem('🕐 Solo Verificación: Cada 5 min (24 horas)','configurarTriggersDiarios')
+      .addItem('🏢 Solo Verificación: Cada 5 min (horario laboral)','configurarTriggersHorarioLaboral')
+      .addSeparator()
+      .addItem('📅 Ver Triggers Activos','verTriggersActivos')
+      .addItem('🛑 Detener todos los triggers','detenerTriggers'))
+    .addItem('📊 Ver Estadísticas','verEstadisticas')
+    .addSubMenu(ui.createMenu('📱 Contactos')
+      .addItem('📋 Ver Resumen de Contactos','gestionarContactos')
+      .addItem('🔍 Verificar Contacto de Zona','verificarContactosZona'))
+    .addSeparator()
+    .addSubMenu(ui.createMenu('🧪 Pruebas de Notificaciones')
+      .addItem('📋 Probar Retención (Orden Existente)','probarNotificacionOrdenRetenida')
+      .addItem('✏️ Probar Retención (Datos Personalizados)','probarNotificacionRetenidaPersonalizada')
+      .addSeparator()
+      .addItem('✅ Probar Liberación (Solo Retenidas)','probarLiberacionOrdenExistente')
+      .addItem('🔔 Probar Liberación (Cualquier Orden)','probarNotificacionOrdenLiberada'))
+    .addSeparator()
+    .addItem('🔄 Ejecutar Reporte Diario Ahora','reporteDiario')
+    .addItem('🔍 Verificar Cambios Ahora','verificarCambios')
+    .addToUi();
+}
