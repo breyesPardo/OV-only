@@ -1,0 +1,243 @@
+// ================== CONFIGURACIÓN Y CONSTANTES ==================
+const CONFIG = {
+  HOJAS: {
+    ordenes: {
+      nombre: "OrdenesRetenidas",
+      headers: ["Zona", "Cliente", "Órden", "Fecha", "Observación", "Estado", "Motivo Retención"]
+    },
+    logs: {
+      nombre: "LogsLiberaciones",
+      headers: ["OrderNum", "Zona", "Cliente", "Fecha Liberación", "Hora Liberación", 
+                "UsuarioID", "Nombre Usuario", "Observaciones", "Estado"]
+    },
+    control: {
+      nombre: "ControlEnvios",
+      headers: ["Número de Orden", "Estado Actual", "Fecha Último Envío", "Hora Último Envío", 
+                "Tipo de Notificación", "¿Retenida Notificada Hoy?", "¿Liberación Notificada Hoy?", 
+                "Cliente", "Zona"]
+    },
+    contactos: {
+      nombre: "ContactosZonas",
+      headers: ["Zona", "Nombre Representante", "WhatsApp", "Email", "Activo"]
+    }
+  },
+  
+  QUERIES: {
+    ordenesRetenidas: `
+      SELECT d.OrderHed_OrderNum, CONVERT(VARCHAR(10), d.OrderHed_OrderDate, 103) AS Fecha,
+             d.Zona, d.Customer_Name, d.ObservacionesRetencionCredito
+      FROM EpicorRepTran.dbo.udvPortalCustDtlOV d WITH (NOLOCK)
+      WHERE d.CreditoRetenido = 1 AND d.OrderHed_VoidOrder = 0 
+        AND d.Zona != 'Comercial Agrosoil'
+        AND (d.CreditOverride IS NULL OR d.CreditOverride = 0)
+      ORDER BY d.OrderHed_OrderNum DESC
+    `,
+    
+    ordenesLiberadas: `
+      SELECT d.OrderHed_OrderNum, d.Zona, d.Customer_Name,
+             CONVERT(VARCHAR(10), d.FechaLiberacionCredito, 103) AS Fecha,
+             CONVERT(VARCHAR(8), d.HoraLiberacionCredito, 108) AS HoraLiberacionCredito,
+             oh.CreditOverrideUserID, u.Name, d.ObservacionesRetencionCredito,
+             CONVERT(VARCHAR(19), d.FechaLiberacionCredito, 120) AS FechaHoraCompleta
+      FROM EpicorRepTran.dbo.udvPortalCustDtlOV d WITH (NOLOCK)
+      JOIN EpicorRepTran.dbo.OrderHed oh WITH (NOLOCK) 
+        ON d.OrderHed_OrderNum = oh.OrderNum AND d.OrderHed_Company = oh.Company
+      LEFT JOIN EpicorTrain10.dbo.UserFile u WITH (NOLOCK) 
+        ON oh.CreditOverrideUserID = u.DcdUserID
+      WHERE d.CreditoRetenido = 0 AND d.OrderHed_VoidOrder = 0 
+        AND d.Zona != 'Comercial Agrosoil' AND oh.CreditOverride = 1 
+        AND d.FechaLiberacionCredito IS NOT NULL
+        AND d.FechaLiberacionCredito >= DATEADD(day, -1, GETDATE())
+      ORDER BY d.FechaLiberacionCredito DESC, d.HoraLiberacionCredito DESC
+    `
+  },
+  
+  API: {
+    retenciones: "reporte_ordenes_retenidasv1",
+    liberaciones: "reporte_ordenes_liberadasv1",
+    numeroSoporte: "3103149259",
+    numeroDefecto: "3182260739",
+    codigoPais: "57"
+  },
+  
+  MENSAJES: {
+    retenida: {
+      nueva: '🆕 NUEVA ORDEN RETENIDA',
+      volvio: '⚠️ ORDEN VOLVIÓ A RETENCIÓN',
+      reporte: '📊 REPORTE DIARIO 7:00 AM'
+    },
+    liberada: '✅ ORDEN LIBERADA'
+  }
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ================== SISTEMA DE NOTIFICACIONES ==================
+function enviarNotificaciones(ordenesParaEnviar, sheets, controlData, fechaHoy, horaActual) {
+  if (ordenesParaEnviar.length === 0) return;
+  
+  const credenciales = getCredenciales();
+  
+  if (!validarCredenciales(credenciales, 'API')) {
+    Utils.showAlert('❌ Error de Configuración',
+      'No se encontraron las credenciales de la API.\n\n' +
+      'Por favor, ejecuta primero la función configurarCredencialesSeguras() ' +
+      'desde el editor de scripts.');
+    return;
+  }
+  
+  const contactos = cargarContactosZonas();
+  const fechaReporte = Utils.formatDate(Utils.getHoraColombia(), "dd/MM/yyyy HH:mm:ss");
+  const actualizacionesControl = [];
+  
+  // Procesar hasta 200 órdenes
+  ordenesParaEnviar.slice(0, 200).forEach(({ orden, tipo, datos, esLiberada }) => {
+    const numeroWhatsApp = contactos.zonaANumero[datos.zona];
+    const representante = contactos.zonaANombre[datos.zona];
+    
+    Logger.log(`Procesando orden ${orden} - Zona: ${datos.zona}`);
+    Logger.log(`WhatsApp encontrado: ${numeroWhatsApp || 'NO ENCONTRADO'}`);
+    Logger.log(`Representante: ${representante || 'NO ENCONTRADO'}`);
+    
+    if (!numeroWhatsApp) {
+      Logger.log(`⚠️ ADVERTENCIA: No se encontró contacto para zona: ${datos.zona}`);
+      Logger.log(`Se usará número por defecto: ${CONFIG.API.numeroDefecto}`);
+    }
+    
+    const numeroFinal = numeroWhatsApp || CONFIG.API.numeroDefecto;
+    const telefono = CONFIG.API.codigoPais + numeroFinal;
+    const representanteFinal = representante || "Representante sin asignar";
+    const representanteCorto = Utils.formatearNombreCorto(representanteFinal);
+    
+    const mensaje = obtenerMensaje(esLiberada, tipo);
+    const params = construirParametros(esLiberada, orden, datos, fechaReporte, representanteCorto, mensaje);
+    
+    try {
+      const response = enviarNotificacionAPI(credenciales, telefono, esLiberada, tipo, orden, params);
+      
+      if (validarRespuestaAPI(response)) {
+        Logger.log(`✅ Notificación enviada exitosamente para orden ${orden} a ${telefono}`);
+        
+        const controlExistente = controlData[orden];
+        
+        actualizacionesControl.push({
+          orden, 
+          estado: esLiberada ? 'LIBERADA' : 'RETENIDA',
+          fechaEnvio: fechaHoy,
+          horaEnvio: horaActual,
+          tipoNotificacion: tipo,
+          enviadoHoyRetenida: !esLiberada ? "SI" : (controlExistente?.enviadoHoyRetenida || "NO"),
+          enviadoHoyLiberada: esLiberada ? "SI" : (controlExistente?.enviadoHoyLiberada || "NO"),
+          cliente: datos.cliente,
+          zona: datos.zona,
+          fila: controlExistente?.fila
+        });
+      }
+    } catch (e) {
+      Logger.log(`❌ Error enviando ${orden}: ${e.message}`);
+    }
+    
+    Utilities.sleep(1000); // Evitar límites de tasa
+  });
+  
+  // Actualizar hoja de control
+  actualizarControlEnvios(sheets.control, actualizacionesControl);
+}
+
+function obtenerMensaje(esLiberada, tipo) {
+  if (esLiberada) return CONFIG.MENSAJES.liberada;
+  
+  if (tipo.includes('Nueva')) return CONFIG.MENSAJES.retenida.nueva;
+  if (tipo.includes('volvió')) return CONFIG.MENSAJES.retenida.volvio;
+  return CONFIG.MENSAJES.retenida.reporte;
+}
+
+function construirParametros(esLiberada, orden, datos, fechaReporte, representanteCorto, mensaje) {
+  if (esLiberada) {
+    return {
+      "1": orden,
+      "2": Utils.procesarFecha(datos.fecha) + (datos.hora ? " " + datos.hora.split(' ')[0] : ""),
+      "3": datos.cliente,
+      "4": datos.zona,
+      "5": representanteCorto,
+      "6": datos.observacion,
+      "7": CONFIG.API.numeroSoporte
+    };
+  } else {
+    return {
+      "1": fechaReporte,
+      "2": representanteCorto,
+      "3": datos.zona,
+      "4": datos.cliente,
+      "5": `${mensaje} 🔹 Orden: ${orden} - ${Utils.procesarFecha(datos.fecha)}`,
+      "6": `📄 ${orden}: ${datos.observacion}`,
+      "7": CONFIG.API.numeroSoporte
+    };
+  }
+}
+
+function enviarNotificacionAPI(credenciales, telefono, esLiberada, tipo, orden, params) {
+  Logger.log(`Enviando notificación ${esLiberada ? 'LIBERACIÓN' : 'RETENCIÓN'} para orden ${orden}`);
+  Logger.log(`Teléfono destino: ${telefono}`);
+  
+  return UrlFetchApp.fetch(credenciales.API.url, {
+    method: "post",
+    contentType: "application/json",
+    headers: { "access-token": credenciales.API.token },
+    payload: JSON.stringify({
+      chatPlatform: "whatsapp",
+      chatChannelNumber: credenciales.API.channel,
+      platformContactId: telefono,
+      ruleNameOrId: esLiberada ? CONFIG.API.liberaciones : CONFIG.API.retenciones,
+      params,
+      clientPayload: `orden_${tipo}_${orden}_${Date.now()}`
+    }),
+    muteHttpExceptions: true
+  });
+}
+
+function validarRespuestaAPI(response) {
+  const texto = response.getContentText();
+  const responseData = JSON.parse(texto);
+  
+  return texto.includes("success") || (responseData.id && responseData.problems === null);
+}
+
+function actualizarControlEnvios(hojaControl, actualizaciones) {
+  actualizaciones.forEach(act => {
+    const valores = [
+      act.orden, act.estado, act.fechaEnvio, act.horaEnvio, 
+      act.tipoNotificacion, act.enviadoHoyRetenida, act.enviadoHoyLiberada,
+      act.cliente, act.zona
+    ];
+    
+    if (act.fila) {
+      hojaControl.getRange(act.fila, 1, 1, 9).setValues([valores]);
+    } else {
+      hojaControl.appendRow(valores);
+    }
+  });
+  
+  Utils.aplicarFormatoCondicional(hojaControl);
+}
