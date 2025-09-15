@@ -1,0 +1,2221 @@
+// ================== CONFIGURACIÓN INICIAL DE SEGURIDAD ==================
+// IMPORTANTE: Ejecuta configurarCredencialesSeguras() UNA SOLA VEZ, luego puedes eliminar esta función
+
+function getCredenciales() {
+  Logger.log('===== INICIO getCredenciales() =====');
+  const scriptProperties = PropertiesService.getScriptProperties();
+  
+  const credenciales = {
+    DB: {
+      url: scriptProperties.getProperty('DB_URL'),
+      user: scriptProperties.getProperty('DB_USER'),
+      pass: scriptProperties.getProperty('DB_PASS')
+    },
+    API: {
+      url: scriptProperties.getProperty('API_URL'),
+      token: scriptProperties.getProperty('API_TOKEN'),
+      channel: scriptProperties.getProperty('API_CHANNEL')
+    }
+  };
+  
+  Logger.log('Credenciales DB encontradas: ' + (credenciales.DB.url ? 'SI' : 'NO'));
+  Logger.log('Credenciales API encontradas: ' + (credenciales.API.url ? 'SI' : 'NO'));
+  Logger.log('===== FIN getCredenciales() =====');
+  
+  return credenciales;
+}
+
+function verPropiedadesGuardadas() {
+  Logger.log('===== INICIO verPropiedadesGuardadas() =====');
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const propiedades = scriptProperties.getKeys();
+  
+  Logger.log(`Total de propiedades encontradas: ${propiedades.length}`);
+  
+  if (propiedades.length === 0) {
+    Logger.log('No hay credenciales guardadas - mostrando alerta');
+    SpreadsheetApp.getUi().alert('Sin Credenciales', 
+      'No hay credenciales guardadas.\n\nEjecuta primero configurarCredencialesSeguras()', 
+      SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+  
+  let mensaje = '🔐 Credenciales guardadas:\n\n';
+  propiedades.forEach(prop => {
+    Logger.log(`Propiedad encontrada: ${prop}`);
+    mensaje += `• ${prop}\n`;
+  });
+  
+  mensaje += '\n\nNOTA: Los valores están encriptados y seguros.';
+  
+  SpreadsheetApp.getUi().alert('Credenciales Seguras', mensaje, SpreadsheetApp.getUi().ButtonSet.OK);
+  Logger.log('===== FIN verPropiedadesGuardadas() =====');
+}
+
+function actualizarCredencial() {
+  Logger.log('===== INICIO actualizarCredencial() =====');
+  const ui = SpreadsheetApp.getUi();
+  const scriptProperties = PropertiesService.getScriptProperties();
+  
+  const credencial = ui.prompt(
+    'Actualizar Credencial',
+    'Opciones disponibles:\n' +
+    '• DB_URL\n• DB_USER\n• DB_PASS\n• API_URL\n• API_TOKEN\n• API_CHANNEL\n\n' +
+    'Escribe el nombre de la credencial:',
+    ui.ButtonSet.OK_CANCEL
+  );
+  
+  if (credencial.getSelectedButton() !== ui.Button.OK) {
+    Logger.log('Usuario canceló la actualización');
+    return;
+  }
+  
+  const nombre = credencial.getResponseText().trim();
+  Logger.log(`Credencial a actualizar: ${nombre}`);
+  
+  const credencialesValidas = ['DB_URL', 'DB_USER', 'DB_PASS', 'API_URL', 'API_TOKEN', 'API_CHANNEL'];
+  
+  if (!credencialesValidas.includes(nombre)) {
+    Logger.log(`Error: Credencial no válida: ${nombre}`);
+    ui.alert('❌ Error', 'Nombre de credencial no válido.', ui.ButtonSet.OK);
+    return;
+  }
+  
+  const valor = ui.prompt(
+    'Nuevo Valor',
+    `Ingresa el nuevo valor para ${nombre}:`,
+    ui.ButtonSet.OK_CANCEL
+  );
+  
+  if (valor.getSelectedButton() === ui.Button.OK) {
+    scriptProperties.setProperty(nombre, valor.getResponseText());
+    Logger.log(`Credencial actualizada exitosamente: ${nombre}`);
+    ui.alert('✅ Éxito', `La credencial "${nombre}" ha sido actualizada.`, ui.ButtonSet.OK);
+  } else {
+    Logger.log('Usuario canceló el ingreso del valor');
+  }
+  Logger.log('===== FIN actualizarCredencial() =====');
+}
+
+function eliminarCredencial() {
+  Logger.log('===== INICIO eliminarCredencial() =====');
+  const ui = SpreadsheetApp.getUi();
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const propiedades = scriptProperties.getKeys();
+  
+  Logger.log(`Total de propiedades disponibles: ${propiedades.length}`);
+  
+  if (propiedades.length === 0) {
+    Logger.log('No hay credenciales para eliminar');
+    ui.alert('Sin Credenciales', 'No hay credenciales guardadas.', ui.ButtonSet.OK);
+    return;
+  }
+  
+  const response = ui.prompt(
+    'Eliminar Credencial',
+    'Credenciales disponibles:\n' + propiedades.join('\n') + '\n\nEscribe el nombre de la credencial a eliminar:',
+    ui.ButtonSet.OK_CANCEL
+  );
+  
+  if (response.getSelectedButton() === ui.Button.OK) {
+    const credencial = response.getResponseText().trim();
+    Logger.log(`Intentando eliminar credencial: ${credencial}`);
+    
+    if (propiedades.includes(credencial)) {
+      scriptProperties.deleteProperty(credencial);
+      Logger.log(`Credencial eliminada exitosamente: ${credencial}`);
+      ui.alert('✅ Éxito', `La credencial "${credencial}" ha sido eliminada.`, ui.ButtonSet.OK);
+    } else {
+      Logger.log(`Error: No se encontró la credencial: ${credencial}`);
+      ui.alert('❌ Error', `No se encontró la credencial "${credencial}".`, ui.ButtonSet.OK);
+    }
+  } else {
+    Logger.log('Usuario canceló la eliminación');
+  }
+  Logger.log('===== FIN eliminarCredencial() =====');
+}
+
+// ================== CONFIGURACIÓN Y CONSTANTES ==================
+
+const CONFIG = {
+  HOJAS: {
+    ordenes: { nombre: "OrdenesRetenidas", headers: ["Zona", "Cliente", "Órden", "Fecha", "Observación", "Estado", "Motivo Retención"] },
+    logs: { nombre: "LogsLiberaciones", headers: ["OrderNum", "Zona", "Cliente", "Fecha Liberación", "Hora Liberación", "UsuarioID", "Nombre Usuario", "Observaciones", "Estado"] },
+    control: { nombre: "ControlEnvios", headers: ["Número de Orden", "Estado Actual", "Fecha Último Envío", "Hora Último Envío", "Tipo de Notificación", "¿Retenida Notificada Hoy?", "¿Liberación Notificada Hoy?", "Cliente", "Zona"] },
+    contactos: { nombre: "ContactosZonas", headers: ["Zona", "Nombre Representante", "WhatsApp", "Email", "Activo"] }
+  },
+  CONTACTOS_INICIALES: [
+    ["Zona1Cundinamarca-Boyacá-Santa", "Juan Camilo Gil Orjuela", "3182260739", "", "SI"],
+    ["Zona2-Cundinamarca", "Sergio Andres Rojas Sanchez", "3182260739", "", "SI"],
+    ["Zona3-Boyacá", "Yury Fonseca Patarroyo", "3182260739", "", "SI"],
+    ["Zona4-Santander-Cesar", "Oscar Fernando Chingate Cruz", "3182260739", "", "SI"],
+    ["Zona5-Norte de Santander", "Freddy Andres Bastianelli Fontana", "3182260739", "", "SI"],
+    ["Zona6-Suroeste Antioqueño", "Carlos Andres Arboleda Tabares", "3182260739", "", "SI"],
+    ["Zona7-Oriente y Nte Antioquía", "Rafael Leonardo Peña Sarmiento", "3182260739", "", "SI"],
+    ["Zona8-Meta", "Ximena Nathalia Nuñez Cruz", "3182260739", "", "SI"],
+    ["Zona9-Casanaré", "Angel Alonso Vasquez Morales", "3182260739", "", "SI"],
+    ["Zona10-Tolima Centro - Norte", "Assad Fraija Lopera", "3182260739", "", "SI"],
+    ["Zona11-Tolima Sur y Oriente", "Edna Liliana Portillo", "3182260739", "", "SI"],
+    ["Zona12-Huila Norte", "Domingo Jose Soto Martinez", "3182260739", "", "SI"],
+    ["Zona14-HuilaCentroSur-Caquetá", "Ivan Dario Lopez Rubio", "3182260739", "", "SI"],
+    ["Zona15-Cauca", "Claudia Patricia Ussa", "3182260739", "", "SI"],
+    ["Zona16-Nariño", "Carlos Alberto Castillo Ñañez", "3182260739", "", "SI"],
+    ["Zona17-Valle", "Diego Herney Guisa Velasquez", "3182260739", "", "SI"],
+    ["Zona18-Eje Cafetero", "Juan Pablo Londoño Aristizabal", "3182260739", "", "SI"],
+    ["Zona 19 Palma", "Juan Pablo Carranza", "3182260739", "", "SI"],
+    ["Zona 20 Urabá", "Gadelia Gliseth Gomez Gomez", "3182260739", "", "SI"],
+    ["Zona 21 Caña", "Juan Pablo Carranza", "3182260739", "", "SI"],
+    ["Zona 23 - Caribe seco", "Sandra Judith Castillo", "3182260739", "", "SI"],
+    ["Zona 25 Flores", "Javier Leonardo Erazo Velandia", "3182260739", "", "SI"],
+    ["Ecuador", "Sandra Valverde", "3182260739", "", "SI"],
+    ["Licitaciones Colinagro", "Sandra Valverde", "3182260739", "", "SI"],
+    ["Bolivia", "Representante sin asignar", "3182260739", "", "SI"],
+    ["Gerencia General", "Representante sin asignar", "3182260739", "", "SI"],
+    ["Republica Dominicana", "Representante sin asignar", "3182260739", "", "SI"]
+  ]
+};
+
+// ================== FUNCIONES AUXILIARES ==================
+
+function getSheet(nombre, headers, crear = true) {
+  Logger.log(`===== INICIO getSheet(${nombre}) =====`);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let hoja = ss.getSheetByName(nombre);
+  
+  if (!hoja && crear) {
+    Logger.log(`Hoja ${nombre} no existe, creándola...`);
+    hoja = ss.insertSheet(nombre);
+    if (headers) {
+      Logger.log(`Agregando headers a ${nombre}: ${headers.join(', ')}`);
+      hoja.getRange(1, 1, 1, headers.length).setValues([headers])
+        .setFontWeight("bold").setBackground("#4285f4").setFontColor("white");
+      hoja.setFrozenRows(1);
+      hoja.autoResizeColumns(1, headers.length);
+    }
+  } else if (hoja) {
+    Logger.log(`Hoja ${nombre} encontrada exitosamente`);
+  } else {
+    Logger.log(`Hoja ${nombre} no encontrada y crear=${crear}`);
+  }
+  
+  Logger.log(`===== FIN getSheet(${nombre}) =====`);
+  return hoja;
+}
+
+function formatDate(fecha, formato = "dd/MM/yyyy") {
+  Logger.log(`formatDate: Entrada=${fecha}, Formato=${formato}`);
+  if (!fecha) {
+    Logger.log('formatDate: Sin fecha, retornando "Sin fecha"');
+    return "Sin fecha";
+  }
+  try {
+    const fechaObj = fecha instanceof Date ? fecha : new Date(fecha);
+    const resultado = Utilities.formatDate(fechaObj, "America/Bogota", formato);
+    Logger.log(`formatDate: Resultado=${resultado}`);
+    return resultado;
+  } catch (e) {
+    Logger.log(`formatDate: Error=${e.message}, retornando string original`);
+    return String(fecha);
+  }
+}
+
+function getHoraColombia() {
+  Logger.log('Obteniendo hora de Colombia...');
+  const ahora = new Date();
+  const horaColombia = new Date(ahora.toLocaleString("en-US", {timeZone: "America/Bogota"}));
+  Logger.log(`Hora Colombia: ${horaColombia}`);
+  return horaColombia;
+}
+
+function procesarFecha(fechaString) {
+  Logger.log(`procesarFecha: Entrada=${fechaString}`);
+  if (!fechaString) {
+    Logger.log('procesarFecha: Sin fecha, retornando vacío');
+    return "";
+  }
+  
+  fechaString = String(fechaString);
+  
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(fechaString)) {
+    Logger.log('procesarFecha: Ya está en formato DD/MM/YYYY');
+    return fechaString;
+  }
+  
+  if (fechaString.includes('T') || fechaString.includes('-')) {
+    try {
+      const soloFecha = fechaString.split('T')[0];
+      
+      if (soloFecha.includes('-')) {
+        const partes = soloFecha.split('-');
+        if (partes.length === 3) {
+          const año = partes[0];
+          const mes = partes[1].padStart(2, '0');
+          const dia = partes[2].padStart(2, '0');
+          const resultado = `${dia}/${mes}/${año}`;
+          Logger.log(`procesarFecha: Convertido a ${resultado}`);
+          return resultado;
+        }
+      }
+      
+      const fecha = new Date(fechaString);
+      const dia = String(fecha.getDate()).padStart(2, '0');
+      const mes = String(fecha.getMonth() + 1).padStart(2, '0');
+      const año = fecha.getFullYear();
+      const resultado = `${dia}/${mes}/${año}`;
+      Logger.log(`procesarFecha: Convertido usando Date a ${resultado}`);
+      return resultado;
+    } catch (e) {
+      Logger.log(`procesarFecha: Error=${e.message}`);
+      return fechaString.split('T')[0];
+    }
+  }
+  
+  Logger.log(`procesarFecha: Retornando sin cambios=${fechaString}`);
+  return fechaString;
+}
+
+function formatearNombreCorto(nombreCompleto) {
+  Logger.log(`formatearNombreCorto: Entrada="${nombreCompleto}"`);
+  if (!nombreCompleto) {
+    Logger.log('formatearNombreCorto: Sin nombre, retornando "Representante"');
+    return "Representante";
+  }
+  
+  const partes = nombreCompleto.trim().split(/\s+/);
+  Logger.log(`formatearNombreCorto: ${partes.length} partes encontradas`);
+  
+  if (partes.length === 1) return partes[0];
+  if (partes.length === 2) return partes.join(' ');
+  
+  const preposiciones = ['de', 'del', 'la', 'las', 'los', 'da', 'do', 'dos'];
+  
+  let nombres = [];
+  let i = 0;
+  
+  while (i < partes.length && i < 2) {
+    if (!preposiciones.includes(partes[i].toLowerCase())) {
+      nombres.push(partes[i]);
+    }
+    i++;
+  }
+  
+  if (nombres.length === 0) {
+    nombres = partes.slice(0, 2);
+  }
+  
+  const resultado = nombres.join(' ');
+  Logger.log(`formatearNombreCorto: Resultado="${resultado}"`);
+  return resultado;
+}
+
+function showAlert(titulo, mensaje) {
+  Logger.log(`showAlert: Título="${titulo}"`);
+  Logger.log(`showAlert: Mensaje="${mensaje}"`);
+  SpreadsheetApp.getUi().alert(titulo, mensaje, SpreadsheetApp.getUi().ButtonSet.OK);
+}
+
+// ================== CONFIGURACIÓN INICIAL ==================
+
+function configuracionInicial() {
+  Logger.log('===== INICIO configuracionInicial() =====');
+  const hojaContactos = getSheet(CONFIG.HOJAS.contactos.nombre, CONFIG.HOJAS.contactos.headers);
+  
+  if (hojaContactos.getLastRow() === 1) {
+    Logger.log('Hoja de contactos vacía, agregando datos iniciales...');
+    Logger.log(`Agregando ${CONFIG.CONTACTOS_INICIALES.length} contactos iniciales`);
+    
+    hojaContactos.getRange(2, 1, CONFIG.CONTACTOS_INICIALES.length, CONFIG.HOJAS.contactos.headers.length)
+      .setValues(CONFIG.CONTACTOS_INICIALES);
+      
+    showAlert('✅ Hoja de Contactos Creada', 
+      'Se ha creado la hoja "ContactosZonas" con los datos iniciales.\n\n' +
+      'Puedes actualizar los números de WhatsApp y nombres directamente en esta hoja.');
+  } else {
+    Logger.log(`Hoja de contactos ya tiene ${hojaContactos.getLastRow() - 1} registros`);
+  }
+  Logger.log('===== FIN configuracionInicial() =====');
+}
+
+// ================== CARGA DE CONTACTOS ==================
+
+function cargarContactosZonas() {
+  Logger.log('===== INICIO cargarContactosZonas() =====');
+  const hojaContactos = getSheet(CONFIG.HOJAS.contactos.nombre);
+  
+  if (!hojaContactos) {
+    Logger.log('ERROR: No se encontró la hoja ContactosZonas');
+    throw new Error("No se encontró la hoja ContactosZonas. Ejecuta configuracionInicial() primero.");
+  }
+  
+  SpreadsheetApp.flush();
+  
+  const datos = hojaContactos.getDataRange().getValues();
+  const zonaANumero = {};
+  const zonaANombre = {};
+  
+  Logger.log(`Cargando ${datos.length - 1} contactos desde la hoja ContactosZonas`);
+  
+  datos.slice(1).forEach((row, index) => {
+    const [zona, nombre, whatsapp, email, activo] = row;
+    
+    const zonaLimpia = String(zona).trim();
+    const nombreLimpio = String(nombre).trim();
+    const whatsappLimpio = String(whatsapp).trim().replace(/\D/g, '');
+    const activoLimpio = String(activo).trim().toUpperCase();
+    
+    Logger.log(`Procesando fila ${index + 2}: Zona="${zonaLimpia}", Activo="${activoLimpio}"`);
+    
+    if (zonaLimpia.includes("23")) {
+      Logger.log(`Zona 23 encontrada: Nombre="${nombreLimpio}", WhatsApp="${whatsappLimpio}", Activo="${activoLimpio}"`);
+    }
+    
+    if (activoLimpio === "SI" && zonaLimpia && whatsappLimpio) {
+      zonaANumero[zonaLimpia] = whatsappLimpio;
+      zonaANombre[zonaLimpia] = nombreLimpio || "Representante sin asignar";
+      
+      Logger.log(`✅ Contacto cargado: ${zonaLimpia} -> ${nombreLimpio} (${whatsappLimpio})`);
+    } else if (zonaLimpia) {
+      Logger.log(`❌ Contacto NO cargado: ${zonaLimpia} - Activo: ${activoLimpio}, WhatsApp: ${whatsappLimpio}`);
+    }
+  });
+  
+  Logger.log(`Total de contactos activos cargados: ${Object.keys(zonaANumero).length}`);
+  Logger.log('===== FIN cargarContactosZonas() =====');
+  
+  return { zonaANumero, zonaANombre };
+}
+
+// ================== TRIGGERS ==================
+
+function configurarTriggersDiarios() {
+  Logger.log('===== INICIO configurarTriggersDiarios() =====');
+  configuracionInicial();
+  
+  Logger.log('Eliminando triggers existentes...');
+  ScriptApp.getProjectTriggers().forEach(trigger => {
+    Logger.log(`Eliminando trigger: ${trigger.getHandlerFunction()}`);
+    ScriptApp.deleteTrigger(trigger);
+  });
+  
+  Logger.log('Creando trigger de reporte diario a las 7:00 AM...');
+  ScriptApp.newTrigger('reporteDiario').timeBased().atHour(7).everyDays(1).create();
+  
+  Logger.log('Creando trigger de verificación cada 5 minutos...');
+  ScriptApp.newTrigger('verificarCambios').timeBased().everyMinutes(5).create();
+  
+  showAlert('✅ Sistema Configurado', 
+    'El sistema enviará automáticamente:\n\n' +
+    '• 7:00 AM: Todas las órdenes retenidas (reporte diario)\n' +
+    '• Cada 5 minutos: Verificación de cambios (liberaciones y nuevas órdenes)\n\n' +
+    'NOTA: Las notificaciones de cambios funcionan las 24 horas');
+    
+  Logger.log('===== FIN configurarTriggersDiarios() =====');
+}
+
+function configurarTriggersHorarioLaboral() {
+  Logger.log('===== INICIO configurarTriggersHorarioLaboral() =====');
+  configuracionInicial();
+  
+  Logger.log('Eliminando triggers existentes...');
+  ScriptApp.getProjectTriggers().forEach(trigger => {
+    Logger.log(`Eliminando trigger: ${trigger.getHandlerFunction()}`);
+    ScriptApp.deleteTrigger(trigger);
+  });
+  
+  Logger.log('Creando trigger de reporte diario a las 7:00 AM...');
+  ScriptApp.newTrigger('reporteDiario').timeBased().atHour(7).everyDays(1).create();
+  
+  Logger.log('Creando trigger de verificación horario laboral cada 5 minutos...');
+  ScriptApp.newTrigger('verificarCambiosHorarioLaboral').timeBased().everyMinutes(5).create();
+  
+  showAlert('✅ Sistema Configurado (Horario Laboral)', 
+    'El sistema enviará automáticamente:\n\n' +
+    '• 7:00 AM: Todas las órdenes retenidas (reporte diario)\n' +
+    '• Cada 5 minutos (8 AM - 6 PM): Verificación de cambios\n\n' +
+    'NOTA: Las verificaciones solo funcionan en horario laboral');
+    
+  Logger.log('===== FIN configurarTriggersHorarioLaboral() =====');
+}
+
+function reporteDiario() {
+  Logger.log('===== INICIO reporteDiario() =====');
+  Logger.log('Ejecutando actualización y envío como REPORTE DIARIO...');
+  actualizarYEnviarOrdenesCredito(true);
+  Logger.log('===== FIN reporteDiario() =====');
+}
+
+function verificarCambios() {
+  Logger.log('===== INICIO verificarCambios() =====');
+  Logger.log('Ejecutando verificación de cambios...');
+  actualizarYEnviarOrdenesCredito(false);
+  Logger.log('===== FIN verificarCambios() =====');
+}
+
+function verificarCambiosHorarioLaboral() {
+  Logger.log('===== INICIO verificarCambiosHorarioLaboral() =====');
+  const ahora = new Date();
+  const horaColombia = new Date(ahora.toLocaleString("en-US", {timeZone: "America/Bogota"}));
+  const horaActual = horaColombia.getHours();
+  
+  Logger.log(`Hora actual en Colombia: ${horaActual}:00`);
+  
+  if (horaActual >= 8 && horaActual < 18) {
+    Logger.log('Dentro de horario laboral, ejecutando verificación...');
+    verificarCambios();
+  } else {
+    Logger.log(`Verificación omitida - fuera de horario laboral (${horaActual}:00 hora Colombia)`);
+  }
+  Logger.log('===== FIN verificarCambiosHorarioLaboral() =====');
+}
+
+function configurarReporteDiarioPersonalizado() {
+  Logger.log('===== INICIO configurarReporteDiarioPersonalizado() =====');
+  const ui = SpreadsheetApp.getUi();
+  
+  const response = ui.prompt(
+    '⏰ Configurar Hora del Reporte Diario',
+    'Ingresa la hora para el reporte diario (0-23):\n\n' +
+    'Ejemplos:\n' +
+    '• 7 = 7:00 AM\n' +
+    '• 13 = 1:00 PM\n' +
+    '• 18 = 6:00 PM',
+    ui.ButtonSet.OK_CANCEL
+  );
+  
+  if (response.getSelectedButton() !== ui.Button.OK) {
+    Logger.log('Usuario canceló la configuración');
+    return;
+  }
+  
+  const hora = parseInt(response.getResponseText().trim());
+  Logger.log(`Hora ingresada: ${hora}`);
+  
+  if (isNaN(hora) || hora < 0 || hora > 23) {
+    Logger.log(`ERROR: Hora inválida: ${hora}`);
+    showAlert('❌ Error', 'Debes ingresar un número válido entre 0 y 23');
+    return;
+  }
+  
+  Logger.log('Eliminando triggers de reporteDiario existentes...');
+  ScriptApp.getProjectTriggers().forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'reporteDiario') {
+      Logger.log('Eliminando trigger de reporteDiario anterior');
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  Logger.log(`Creando nuevo trigger de reporteDiario para las ${hora}:00`);
+  ScriptApp.newTrigger('reporteDiario')
+    .timeBased()
+    .atHour(hora)
+    .everyDays(1)
+    .create();
+  
+  const horaFormateada = hora === 0 ? '12:00 AM' : 
+                        hora < 12 ? `${hora}:00 AM` : 
+                        hora === 12 ? '12:00 PM' : 
+                        `${hora - 12}:00 PM`;
+  
+  Logger.log(`Trigger configurado exitosamente para ${horaFormateada}`);
+  
+  showAlert('✅ Reporte Diario Configurado', 
+    `El reporte diario se enviará todos los días a las ${horaFormateada}\n\n` +
+    'NOTA: Los triggers de verificación de cambios no se han modificado.');
+    
+  Logger.log('===== FIN configurarReporteDiarioPersonalizado() =====');
+}
+
+function configurarTriggerCompleto() {
+  Logger.log('===== INICIO configurarTriggerCompleto() =====');
+  const ui = SpreadsheetApp.getUi();
+  
+  const responseReporte = ui.prompt(
+    '⏰ Hora del Reporte Diario',
+    'Ingresa la hora para el reporte diario (0-23):\n\n' +
+    'Ejemplos: 7 = 7:00 AM, 13 = 1:00 PM',
+    ui.ButtonSet.OK_CANCEL
+  );
+  
+  if (responseReporte.getSelectedButton() !== ui.Button.OK) {
+    Logger.log('Usuario canceló en hora del reporte');
+    return;
+  }
+  
+  const horaReporte = parseInt(responseReporte.getResponseText().trim());
+  Logger.log(`Hora del reporte ingresada: ${horaReporte}`);
+  
+  if (isNaN(horaReporte) || horaReporte < 0 || horaReporte > 23) {
+    Logger.log(`ERROR: Hora inválida: ${horaReporte}`);
+    showAlert('❌ Error', 'Hora inválida para el reporte diario');
+    return;
+  }
+  
+  const tipoVerificacion = ui.alert(
+    '🔄 Tipo de Verificación de Cambios',
+    '¿Cómo deseas configurar la verificación de cambios?\n\n' +
+    'YES = Cada 5 minutos (24 horas)\n' +
+    'NO = Cada 5 minutos (solo horario laboral 8AM-6PM)',
+    ui.ButtonSet.YES_NO_CANCEL
+  );
+  
+  if (tipoVerificacion === ui.Button.CANCEL) {
+    Logger.log('Usuario canceló en tipo de verificación');
+    return;
+  }
+  
+  Logger.log(`Tipo de verificación seleccionado: ${tipoVerificacion === ui.Button.YES ? '24 horas' : 'horario laboral'}`);
+  
+  configuracionInicial();
+  
+  Logger.log('Eliminando todos los triggers existentes...');
+  ScriptApp.getProjectTriggers().forEach(trigger => {
+    Logger.log(`Eliminando trigger: ${trigger.getHandlerFunction()}`);
+    ScriptApp.deleteTrigger(trigger);
+  });
+  
+  Logger.log(`Creando trigger de reporteDiario para las ${horaReporte}:00`);
+  ScriptApp.newTrigger('reporteDiario')
+    .timeBased()
+    .atHour(horaReporte)
+    .everyDays(1)
+    .create();
+  
+  if (tipoVerificacion === ui.Button.YES) {
+    Logger.log('Creando trigger de verificarCambios (24 horas)');
+    ScriptApp.newTrigger('verificarCambios')
+      .timeBased()
+      .everyMinutes(5)
+      .create();
+  } else {
+    Logger.log('Creando trigger de verificarCambiosHorarioLaboral');
+    ScriptApp.newTrigger('verificarCambiosHorarioLaboral')
+      .timeBased()
+      .everyMinutes(5)
+      .create();
+  }
+  
+  const horaFormateada = horaReporte === 0 ? '12:00 AM' : 
+                        horaReporte < 12 ? `${horaReporte}:00 AM` : 
+                        horaReporte === 12 ? '12:00 PM' : 
+                        `${horaReporte - 12}:00 PM`;
+  
+  const tipoConfig = tipoVerificacion === ui.Button.YES ? '24 horas' : 'horario laboral (8AM-6PM)';
+  
+  Logger.log('Configuración completa exitosa');
+  
+  showAlert('✅ Sistema Completamente Configurado', 
+    `Configuración aplicada:\n\n` +
+    `📊 Reporte diario: ${horaFormateada}\n` +
+    `🔄 Verificación de cambios: Cada 5 minutos (${tipoConfig})\n\n` +
+    'El sistema está listo para enviar notificaciones automáticas.');
+    
+  Logger.log('===== FIN configurarTriggerCompleto() =====');
+}
+
+function verTriggersActivos() {
+  Logger.log('===== INICIO verTriggersActivos() =====');
+  const triggers = ScriptApp.getProjectTriggers();
+  
+  Logger.log(`Total de triggers encontrados: ${triggers.length}`);
+  
+  if (triggers.length === 0) {
+    showAlert('📅 Triggers Activos', 'No hay triggers configurados actualmente.');
+    return;
+  }
+  
+  let mensaje = `Total de triggers activos: ${triggers.length}\n\n`;
+  
+  triggers.forEach((trigger, index) => {
+    const funcion = trigger.getHandlerFunction();
+    const tipo = trigger.getEventType();
+    
+    Logger.log(`Trigger ${index + 1}: ${funcion} - Tipo: ${tipo}`);
+    
+    mensaje += `${index + 1}. ${funcion}\n`;
+    
+    if (funcion === 'reporteDiario') {
+      mensaje += `   ⏰ Reporte diario\n`;
+    } else if (funcion === 'verificarCambios') {
+      mensaje += `   🔄 Verificación cada 5 minutos (24/7)\n`;
+    } else if (funcion === 'verificarCambiosHorarioLaboral') {
+      mensaje += `   🔄 Verificación cada 5 minutos (horario laboral)\n`;
+    }
+    
+    mensaje += '\n';
+  });
+  
+  showAlert('📅 Triggers Activos', mensaje);
+  Logger.log('===== FIN verTriggersActivos() =====');
+}
+
+function detenerTriggers() {
+  Logger.log('===== INICIO detenerTriggers() =====');
+  const triggers = ScriptApp.getProjectTriggers();
+  
+  Logger.log(`Eliminando ${triggers.length} triggers...`);
+  
+  triggers.forEach(trigger => {
+    Logger.log(`Eliminando trigger: ${trigger.getHandlerFunction()}`);
+    ScriptApp.deleteTrigger(trigger);
+  });
+  
+  showAlert('🛑 Triggers Detenidos', 
+    `Se han eliminado ${triggers.length} triggers.\n\n` +
+    'El sistema NO enviará notificaciones automáticas hasta que vuelvas a configurar los triggers.');
+    
+  Logger.log('===== FIN detenerTriggers() =====');
+}
+
+// ================== FUNCIÓN PRINCIPAL ==================
+
+function actualizarYEnviarOrdenesCredito(esReporteDiario = true) {
+  Logger.log('===== INICIO actualizarYEnviarOrdenesCredito() =====');
+  Logger.log(`Tipo de ejecución: ${esReporteDiario ? 'REPORTE DIARIO' : 'VERIFICACIÓN DE CAMBIOS'}`);
+  
+  // Obtener credenciales de forma segura
+  const credenciales = getCredenciales();
+  
+  // Verificar que las credenciales existan
+  if (!credenciales.DB.url || !credenciales.DB.user || !credenciales.DB.pass) {
+    Logger.log('ERROR: Credenciales de base de datos no encontradas');
+    SpreadsheetApp.getUi().alert(
+      '❌ Error de Configuración',
+      'No se encontraron las credenciales de la base de datos.\n\n' +
+      'Por favor, ejecuta primero la función configurarCredencialesSeguras() desde el editor de scripts.',
+      SpreadsheetApp.getUi().ButtonSet.OK
+    );
+    return;
+  }
+  
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheets = {};
+  
+  Logger.log('Obteniendo hojas del spreadsheet...');
+  Object.entries(CONFIG.HOJAS).forEach(([key, config]) => {
+    if (key !== 'contactos') {
+      sheets[key] = getSheet(config.nombre, config.headers);
+      Logger.log(`Hoja ${key} obtenida: ${sheets[key] ? 'SI' : 'NO'}`);
+    }
+  });
+  
+  Logger.log('Limpiando hoja de órdenes retenidas...');
+  sheets.ordenes.clear();
+  sheets.ordenes.getRange(1, 1, 1, CONFIG.HOJAS.ordenes.headers.length)
+    .setValues([CONFIG.HOJAS.ordenes.headers]);
+  
+  const controlData = {};
+  const hoy = getHoraColombia();
+  const fechaHoy = formatDate(hoy);
+  
+  Logger.log(`Fecha de hoy: ${fechaHoy}`);
+  
+  if (sheets.control.getLastRow() > 1) {
+    Logger.log('Cargando datos de control existentes...');
+    sheets.control.getDataRange().getValues().slice(1).forEach((row, index) => {
+      const [orden, estado, fechaEnvio, horaEnvio, tipoNotificacion, enviadoHoyRetenida, enviadoHoyLiberada, cliente, zona] = row;
+      controlData[orden] = { 
+        estado, fechaEnvio, horaEnvio, tipoNotificacion,
+        enviadoHoyRetenida: (fechaEnvio === fechaHoy) ? enviadoHoyRetenida : "NO",
+        enviadoHoyLiberada: (fechaEnvio === fechaHoy) ? enviadoHoyLiberada : "NO",
+        cliente, zona, fila: index + 2 
+      };
+    });
+    Logger.log(`Cargados ${Object.keys(controlData).length} registros de control`);
+  }
+  
+  // Usar credenciales seguras para la conexión
+  Logger.log('Conectando a la base de datos...');
+  const conn = Jdbc.getConnection(credenciales.DB.url, credenciales.DB.user, credenciales.DB.pass);
+  const ordenesRetenidasActuales = new Map();
+  const ordenesLiberadasActuales = new Map();
+  
+  try {
+    Logger.log('Ejecutando query de órdenes retenidas...');
+    const queryRetenidas = `
+      SELECT d.OrderHed_OrderNum, CONVERT(VARCHAR(10), d.OrderHed_OrderDate, 103) AS Fecha,
+             d.Zona, d.Customer_Name, d.ObservacionesRetencionCredito
+      FROM EpicorRepTran.dbo.udvPortalCustDtlOV d WITH (NOLOCK)
+      WHERE d.CreditoRetenido = 1 AND d.OrderHed_VoidOrder = 0 
+        AND d.Zona != 'Comercial Agrosoil'
+        AND (d.CreditOverride IS NULL OR d.CreditOverride = 0)
+      ORDER BY d.OrderHed_OrderNum DESC`;
+    
+    const stmt1 = conn.createStatement();
+    const results1 = stmt1.executeQuery(queryRetenidas);
+    const filasOrdenes = [];
+    const ordenesVistas = new Set();
+    
+    while (results1.next()) {
+      const orden = results1.getString("OrderHed_OrderNum");
+      if (ordenesVistas.has(orden)) continue;
+      ordenesVistas.add(orden);
+      
+      const datos = {
+        zona: results1.getString("Zona"),
+        cliente: results1.getString("Customer_Name"),
+        fecha: procesarFecha(results1.getString("Fecha")),
+        observacion: (results1.getString("ObservacionesRetencionCredito") || "SIN OBSERVACIONES").toUpperCase()
+      };
+      
+      filasOrdenes.push([
+        datos.zona, datos.cliente, orden, datos.fecha,
+        `${orden}: ${datos.observacion}`, "RETENIDA", "CRÉDITO"
+      ]);
+      
+      ordenesRetenidasActuales.set(orden, datos);
+    }
+    stmt1.close();
+    
+    Logger.log(`Encontradas ${ordenesRetenidasActuales.size} órdenes retenidas`);
+    
+    if (filasOrdenes.length > 0) {
+      Logger.log(`Escribiendo ${filasOrdenes.length} órdenes retenidas en la hoja`);
+      sheets.ordenes.getRange(2, 1, filasOrdenes.length, CONFIG.HOJAS.ordenes.headers.length)
+        .setValues(filasOrdenes);
+    }
+    
+    Logger.log('Ejecutando query de órdenes liberadas...');
+    const queryLiberadas = `
+      SELECT d.OrderHed_OrderNum, d.Zona, d.Customer_Name,
+             CONVERT(VARCHAR(10), d.FechaLiberacionCredito, 103) AS Fecha,
+             CONVERT(VARCHAR(8), d.HoraLiberacionCredito, 108) AS HoraLiberacionCredito,
+             oh.CreditOverrideUserID, u.Name, d.ObservacionesRetencionCredito,
+             CONVERT(VARCHAR(19), d.FechaLiberacionCredito, 120) AS FechaHoraCompleta
+      FROM EpicorRepTran.dbo.udvPortalCustDtlOV d WITH (NOLOCK)
+      JOIN EpicorRepTran.dbo.OrderHed oh WITH (NOLOCK) 
+        ON d.OrderHed_OrderNum = oh.OrderNum AND d.OrderHed_Company = oh.Company
+      LEFT JOIN EpicorTrain10.dbo.UserFile u WITH (NOLOCK) 
+        ON oh.CreditOverrideUserID = u.DcdUserID
+      WHERE d.CreditoRetenido = 0 AND d.OrderHed_VoidOrder = 0 
+        AND d.Zona != 'Comercial Agrosoil' AND oh.CreditOverride = 1 
+        AND d.FechaLiberacionCredito IS NOT NULL
+        AND d.FechaLiberacionCredito >= DATEADD(day, -1, GETDATE())
+      ORDER BY d.FechaLiberacionCredito DESC, d.HoraLiberacionCredito DESC`;
+    
+    const stmt2 = conn.createStatement();
+    const results2 = stmt2.executeQuery(queryLiberadas);
+    const dataLiberadas = [];
+    
+    while (results2.next()) {
+      const ordenNum = results2.getString("OrderHed_OrderNum");
+      const fechaLiberacion = results2.getString("Fecha") || "";
+      const horaLiberacion = results2.getString("HoraLiberacionCredito") || "";
+      const fechaHoraCompleta = results2.getString("FechaHoraCompleta") || "";
+      
+      const datosLiberacion = {
+        zona: results2.getString("Zona"),
+        cliente: results2.getString("Customer_Name"),
+        fecha: fechaLiberacion,
+        hora: horaLiberacion,
+        fechaHoraCompleta: fechaHoraCompleta,
+        observacion: (results2.getString("ObservacionesRetencionCredito") || "SIN OBSERVACIONES").toUpperCase()
+      };
+      
+      datosLiberacion.fecha = procesarFecha(datosLiberacion.fecha);
+      
+      dataLiberadas.push([
+        ordenNum,
+        datosLiberacion.zona,
+        datosLiberacion.cliente,
+        datosLiberacion.fecha || "",
+        datosLiberacion.hora || "",
+        results2.getString("CreditOverrideUserID") || "",
+        results2.getString("Name") || "",
+        datosLiberacion.observacion,
+        "LIBERADA"
+      ]);
+      
+      ordenesLiberadasActuales.set(ordenNum, datosLiberacion);
+    }
+    stmt2.close();
+    
+    Logger.log(`Encontradas ${ordenesLiberadasActuales.size} órdenes liberadas recientes`);
+    
+    if (dataLiberadas.length > 0) {
+      Logger.log(`Escribiendo ${dataLiberadas.length} órdenes liberadas en logs`);
+      const marcaTiempo = formatDate(getHoraColombia(), "dd/MM/yyyy HH:mm:ss");
+      const datosConSeparador = [...dataLiberadas, 
+        ["", "", "", "", "", "", "", "", `← Nuevas liberaciones: ${marcaTiempo}`]];
+      sheets.logs.insertRowsAfter(1, datosConSeparador.length);
+      sheets.logs.getRange(2, 1, datosConSeparador.length, CONFIG.HOJAS.logs.headers.length)
+        .setValues(datosConSeparador);
+    }
+    
+  } finally {
+    Logger.log('Cerrando conexión a base de datos...');
+    conn.close();
+  }
+  
+  Logger.log('Procesando órdenes para envío...');
+  const ordenesParaEnviar = [];
+  const horaActual = formatDate(hoy, "HH:mm:ss");
+  
+  // Procesar órdenes retenidas
+  Logger.log('Evaluando órdenes retenidas para notificación...');
+  ordenesRetenidasActuales.forEach((datos, orden) => {
+    const control = controlData[orden];
+    let debeEnviar = false;
+    let tipo = '';
+    
+    if (!control) {
+      debeEnviar = true;
+      tipo = 'Nueva orden retenida';
+      Logger.log(`Orden ${orden}: Nueva orden detectada`);
+    } else if (control.estado === 'LIBERADA' && control.enviadoHoyRetenida === "NO") {
+      debeEnviar = true;
+      tipo = 'Orden volvió a retención';
+      Logger.log(`Orden ${orden}: Volvió a retención`);
+    } else if (esReporteDiario && control.enviadoHoyRetenida === "NO") {
+      debeEnviar = true;
+      tipo = 'Reporte diario 7:00 AM';
+      Logger.log(`Orden ${orden}: Incluida en reporte diario`);
+    }
+    
+    if (debeEnviar) {
+      ordenesParaEnviar.push({ orden, tipo, datos, esLiberada: false });
+    }
+  });
+  
+  // Procesar órdenes liberadas
+  Logger.log('Evaluando órdenes liberadas para notificación...');
+  ordenesLiberadasActuales.forEach((datosLiberacion, orden) => {
+    const control = controlData[orden];
+    let debeEnviar = false;
+    
+    if (control && control.estado === 'RETENIDA' && control.enviadoHoyLiberada === "NO") {
+      debeEnviar = true;
+      Logger.log(`Orden ${orden}: Liberada (estaba retenida)`);
+    } else if (!control) {
+      debeEnviar = true;
+      Logger.log(`Orden ${orden}: Liberada (nueva)`);
+    }
+    
+    if (debeEnviar) {
+      const datosCompletos = {
+        zona: datosLiberacion.zona,
+        cliente: datosLiberacion.cliente,
+        fecha: datosLiberacion.fecha,
+        hora: datosLiberacion.hora || "",
+        observacion: datosLiberacion.observacion
+      };
+      
+      ordenesParaEnviar.push({
+        orden,
+        tipo: 'Orden liberada',
+        datos: datosCompletos,
+        esLiberada: true
+      });
+    }
+  });
+  
+  // Actualizar control data para órdenes liberadas nuevas
+  ordenesLiberadasActuales.forEach((datosLiberacion, orden) => {
+    if (!controlData[orden]) {
+      Logger.log(`Agregando orden liberada ${orden} a control data`);
+      controlData[orden] = {
+        estado: 'LIBERADA',
+        fechaEnvio: fechaHoy,
+        horaEnvio: horaActual,
+        tipoNotificacion: 'Orden liberada',
+        enviadoHoyRetenida: "NO",
+        enviadoHoyLiberada: "NO",
+        cliente: datosLiberacion.cliente,
+        zona: datosLiberacion.zona,
+        fila: null
+      };
+    }
+  });
+  
+  Logger.log(`Total de órdenes para enviar: ${ordenesParaEnviar.length}`);
+  
+  enviarNotificaciones(ordenesParaEnviar, sheets, controlData, fechaHoy, horaActual);
+  
+  Logger.log(`✅ Proceso completo - ${esReporteDiario ? 'REPORTE DIARIO' : 'VERIFICACIÓN'} - Enviadas: ${ordenesParaEnviar.length}`);
+  Logger.log('===== FIN actualizarYEnviarOrdenesCredito() =====');
+}
+
+// ================== FUNCIÓN DE ENVÍO ==================
+
+function enviarNotificaciones(ordenesParaEnviar, sheets, controlData, fechaHoy, horaActual) {
+  Logger.log('===== INICIO enviarNotificaciones() =====');
+  Logger.log(`Órdenes a enviar: ${ordenesParaEnviar.length}`);
+  
+  if (ordenesParaEnviar.length === 0) {
+    Logger.log('No hay órdenes para enviar');
+    return;
+  }
+  
+  // Obtener credenciales de forma segura
+  const credenciales = getCredenciales();
+  
+  // Verificar credenciales de API
+  if (!credenciales.API.url || !credenciales.API.token || !credenciales.API.channel) {
+    Logger.log('ERROR: Credenciales de API no encontradas');
+    SpreadsheetApp.getUi().alert(
+      '❌ Error de Configuración',
+      'No se encontraron las credenciales de la API.\n\n' +
+      'Por favor, ejecuta primero la función configurarCredencialesSeguras() desde el editor de scripts.',
+      SpreadsheetApp.getUi().ButtonSet.OK
+    );
+    return;
+  }
+  
+  Logger.log('Cargando contactos de zonas...');
+  const contactos = cargarContactosZonas();
+  const fechaReporte = formatDate(getHoraColombia(), "dd/MM/yyyy HH:mm:ss");
+  const actualizacionesControl = [];
+  
+  const ordenesAProcesar = ordenesParaEnviar.slice(0, 200);
+  Logger.log(`Procesando ${ordenesAProcesar.length} órdenes (máximo 200)`);
+  
+  ordenesAProcesar.forEach(({ orden, tipo, datos, esLiberada }) => {
+    Logger.log(`\n--- Procesando orden ${orden} ---`);
+    const numeroWhatsApp = contactos.zonaANumero[datos.zona];
+    const representante = contactos.zonaANombre[datos.zona];
+    
+    Logger.log(`Zona: ${datos.zona}`);
+    Logger.log(`WhatsApp encontrado: ${numeroWhatsApp || 'NO ENCONTRADO'}`);
+    Logger.log(`Representante: ${representante || 'NO ENCONTRADO'}`);
+    
+    if (!numeroWhatsApp) {
+      Logger.log(`⚠️ ADVERTENCIA: No se encontró contacto para zona: ${datos.zona}`);
+      Logger.log(`Se usará número por defecto: 3182260739`);
+    }
+    
+    const numeroFinal = numeroWhatsApp || "3182260739";
+    const telefono = "57" + numeroFinal;
+    const representanteFinal = representante || "Representante sin asignar";
+    const representanteCorto = formatearNombreCorto(representanteFinal);
+    
+    const mensaje = esLiberada ? '✅ ORDEN LIBERADA' : 
+      tipo.includes('Nueva') ? '🆕 NUEVA ORDEN RETENIDA' :
+      tipo.includes('volvió') ? '⚠️ ORDEN VOLVIÓ A RETENCIÓN' : 
+      '📊 REPORTE DIARIO 7:00 AM';
+    
+    Logger.log(`Tipo de mensaje: ${mensaje}`);
+    Logger.log(`Es liberada: ${esLiberada}`);
+    
+    const params = esLiberada ? {
+      "1": orden,
+      "2": procesarFecha(datos.fecha) + (datos.hora ? " " + datos.hora : ""),
+      "3": datos.cliente,
+      "4": datos.zona,
+      "5": representanteCorto,
+      "6": datos.observacion,
+      "7": "3103149259"
+    } : {
+      "1": fechaReporte,
+      "2": representanteCorto,
+      "3": datos.zona,
+      "4": datos.cliente,
+      "5": `${mensaje} 🔹 Orden: ${orden} - ${procesarFecha(datos.fecha)}`,
+      "6": `📄 ${orden}: ${datos.observacion}`,
+      "7": "3103149259"
+    };
+    
+    try {
+      Logger.log(`Enviando notificación ${esLiberada ? 'LIBERACIÓN' : 'RETENCIÓN'} para orden ${orden}`);
+      Logger.log(`Teléfono destino: ${telefono} (${representanteCorto})`);
+      Logger.log(`Plantilla: ${esLiberada ? 'reporte_ordenes_liberadasv1' : 'reporte_ordenes_retenidasv_0'}`);
+      
+      const payload = {
+        chatPlatform: "whatsapp",
+        chatChannelNumber: credenciales.API.channel,
+        platformContactId: telefono,
+        ruleNameOrId: esLiberada ? "reporte_ordenes_liberadasv1" : "reporte_ordenes_retenidasv_0",
+        params,
+        clientPayload: `orden_${tipo}_${orden}_${Date.now()}`
+      };
+      
+      Logger.log(`Payload: ${JSON.stringify(payload)}`);
+      
+      const response = UrlFetchApp.fetch(credenciales.API.url, {
+        method: "post",
+        contentType: "application/json",
+        headers: { "access-token": credenciales.API.token },
+        payload: JSON.stringify(payload),
+        muteHttpExceptions: true
+      });
+      
+      const texto = response.getContentText();
+      const responseData = JSON.parse(texto);
+      
+      Logger.log(`Respuesta status: ${response.getResponseCode()}`);
+      Logger.log(`Respuesta: ${texto.substring(0, 200)}...`);
+      
+      if (texto.includes("success") || (responseData.id && responseData.problems === null)) {
+        Logger.log(`✅ Notificación enviada exitosamente para orden ${orden} a ${telefono}`);
+        
+        const controlExistente = controlData[orden];
+        
+        actualizacionesControl.push({
+          orden, 
+          estado: esLiberada ? 'LIBERADA' : 'RETENIDA',
+          fechaEnvio: fechaHoy,
+          horaEnvio: horaActual,
+          tipoNotificacion: tipo,
+          enviadoHoyRetenida: !esLiberada ? "SI" : (controlExistente?.enviadoHoyRetenida || "NO"),
+          enviadoHoyLiberada: esLiberada ? "SI" : (controlExistente?.enviadoHoyLiberada || "NO"),
+          cliente: datos.cliente,
+          zona: datos.zona,
+          fila: controlExistente?.fila
+        });
+      } else {
+        Logger.log(`❌ Error en respuesta para orden ${orden}: ${texto}`);
+      }
+    } catch (e) {
+      Logger.log(`❌ Error enviando ${orden}: ${e.message}`);
+      Logger.log(`Stack trace: ${e.stack}`);
+    }
+    
+    Logger.log('Esperando 1 segundo antes de siguiente envío...');
+    Utilities.sleep(1000);
+  });
+  
+  Logger.log(`\nActualizando ${actualizacionesControl.length} registros de control...`);
+  
+  actualizacionesControl.forEach(act => {
+    const valores = [
+      act.orden, act.estado, act.fechaEnvio, act.horaEnvio, 
+      act.tipoNotificacion, act.enviadoHoyRetenida, act.enviadoHoyLiberada,
+      act.cliente, act.zona
+    ];
+    
+    if (act.fila) {
+      Logger.log(`Actualizando fila ${act.fila} para orden ${act.orden}`);
+      sheets.control.getRange(act.fila, 1, 1, 9).setValues([valores]);
+    } else {
+      Logger.log(`Agregando nueva fila para orden ${act.orden}`);
+      sheets.control.appendRow(valores);
+    }
+  });
+  
+  if (sheets.control.getLastRow() > 1) {
+    Logger.log('Aplicando formato condicional a hoja de control...');
+    const rangoEstado = sheets.control.getRange(2, 2, sheets.control.getLastRow() - 1, 1);
+    sheets.control.clearConditionalFormatRules();
+    
+    ['RETENIDA', 'LIBERADA'].forEach((estado, i) => {
+      const regla = SpreadsheetApp.newConditionalFormatRule()
+        .whenTextEqualTo(estado)
+        .setBackground(i === 0 ? '#ffcdd2' : '#c8e6c9')
+        .setFontColor(i === 0 ? '#c62828' : '#2e7d32')
+        .setRanges([rangoEstado])
+        .build();
+      sheets.control.setConditionalFormatRules([...sheets.control.getConditionalFormatRules(), regla]);
+    });
+    
+    sheets.control.autoResizeColumns(1, 9);
+  }
+  
+  Logger.log('===== FIN enviarNotificaciones() =====');
+}
+
+// ================== ESTADÍSTICAS ==================
+
+function verEstadisticas() {
+  Logger.log('===== INICIO verEstadisticas() =====');
+  const hojaControl = getSheet(CONFIG.HOJAS.control.nombre, null, false);
+  
+  if (!hojaControl || hojaControl.getLastRow() <= 1) {
+    Logger.log('No hay datos disponibles para estadísticas');
+    showAlert('📊 Estadísticas', 'No hay datos disponibles');
+    return;
+  }
+  
+  const datos = hojaControl.getDataRange().getValues().slice(1);
+  const hoy = formatDate(getHoraColombia());
+  const palabrasPrueba = ['PRUEBA', 'TEST', 'TESTING', 'DEMO'];
+  
+  Logger.log(`Procesando ${datos.length} registros de control...`);
+  
+  const stats = datos.reduce((acc, row) => {
+    const [orden, estado, fechaEnvio, , tipoMensaje, enviadaRetenida, enviadaLiberada] = row;
+    const esPrueba = palabrasPrueba.some(p => 
+      String(orden).toUpperCase().includes(p) || 
+      String(tipoMensaje).toUpperCase().includes(p)
+    );
+    
+    if (esPrueba) {
+      acc.pruebasTotal++;
+    } else {
+      acc.total++;
+      if (estado === 'RETENIDA') acc.retenidas++;
+      if (estado === 'LIBERADA') acc.liberadas++;
+      if (fechaEnvio === hoy && enviadaRetenida === "SI") acc.enviadasHoyRetenida++;
+      if (fechaEnvio === hoy && enviadaLiberada === "SI") acc.enviadasHoyLiberada++;
+    }
+    return acc;
+  }, { total: 0, retenidas: 0, liberadas: 0, enviadasHoyRetenida: 0, enviadasHoyLiberada: 0, pruebasTotal: 0 });
+  
+  Logger.log(`Estadísticas calculadas: ${JSON.stringify(stats)}`);
+  
+  const hojaOrdenes = getSheet(CONFIG.HOJAS.ordenes.nombre, null, false);
+  const hojaLogs = getSheet(CONFIG.HOJAS.logs.nombre, null, false);
+  
+  const ordenesRetenidasActuales = hojaOrdenes ? hojaOrdenes.getLastRow() - 1 : 0;
+  const ordenesLiberadasHistorico = hojaLogs ? 
+    new Set(hojaLogs.getDataRange().getValues().slice(1)
+      .filter(row => row[0] && !String(row[0]).includes('←'))
+      .map(row => row[0])).size : 0;
+  
+  Logger.log(`Órdenes retenidas actuales: ${ordenesRetenidasActuales}`);
+  Logger.log(`Órdenes liberadas históricas: ${ordenesLiberadasHistorico}`);
+  
+  showAlert('📊 ESTADÍSTICAS DEL SISTEMA',
+    `━━━━ ESTADO ACTUAL ━━━━\n` +
+    `Órdenes retenidas actualmente: ${ordenesRetenidasActuales}\n` +
+    `Órdenes liberadas (histórico): ${ordenesLiberadasHistorico}\n\n` +
+    `━━━━ NOTIFICACIONES ENVIADAS ━━━━\n` +
+    `Total notificaciones (sin pruebas): ${stats.total}\n` +
+    `├─ Estado Retenida: ${stats.retenidas}\n` +
+    `└─ Estado Liberada: ${stats.liberadas}\n\n` +
+    `━━━━ ACTIVIDAD DE HOY ━━━━\n` +
+    `Fecha: ${hoy}\n` +
+    `Retenciones notificadas: ${stats.enviadasHoyRetenida}\n` +
+    `Liberaciones notificadas: ${stats.enviadasHoyLiberada}\n\n` +
+    `━━━━ INFORMACIÓN ADICIONAL ━━━━\n` +
+    `Pruebas realizadas: ${stats.pruebasTotal}\n` +
+    `Total registros: ${datos.length}`
+  );
+  
+  Logger.log('===== FIN verEstadisticas() =====');
+}
+
+// ================== FUNCIONES DE PRUEBA ==================
+
+function ejecutarPrueba(tipo, esLiberada = false) {
+  Logger.log(`===== INICIO ejecutarPrueba(${tipo}, ${esLiberada}) =====`);
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  const response = ui.prompt(
+    `Prueba de ${esLiberada ? 'Liberación' : 'Retención'}`,
+    'Ingresa el número de orden:',
+    ui.ButtonSet.OK_CANCEL
+  );
+  
+  if (response.getSelectedButton() !== ui.Button.OK) {
+    Logger.log('Usuario canceló la prueba');
+    return;
+  }
+  
+  const ordenNum = response.getResponseText().trim();
+  Logger.log(`Número de orden ingresado: ${ordenNum}`);
+  
+  if (!ordenNum) {
+    Logger.log('ERROR: No se ingresó número de orden');
+    showAlert('Error', 'Debes ingresar un número de orden');
+    return;
+  }
+  
+  const hojas = [CONFIG.HOJAS.ordenes.nombre, CONFIG.HOJAS.logs.nombre];
+  let ordenEncontrada = null;
+  
+  Logger.log('Buscando orden en las hojas...');
+  
+  for (const nombreHoja of hojas) {
+    const hoja = getSheet(nombreHoja, null, false);
+    if (!hoja) continue;
+    
+    Logger.log(`Buscando en hoja ${nombreHoja}...`);
+    const datos = hoja.getDataRange().getValues();
+    const colOrden = nombreHoja === CONFIG.HOJAS.ordenes.nombre ? 2 : 0;
+    
+    for (let i = 1; i < datos.length; i++) {
+      if (String(datos[i][colOrden]) === String(ordenNum)) {
+        ordenEncontrada = {
+          zona: datos[i][nombreHoja === CONFIG.HOJAS.ordenes.nombre ? 0 : 1],
+          cliente: datos[i][nombreHoja === CONFIG.HOJAS.ordenes.nombre ? 1 : 2],
+          orden: ordenNum,
+          fecha: datos[i][3],
+          observacion: nombreHoja === CONFIG.HOJAS.ordenes.nombre ? 
+            datos[i][4].replace(`${ordenNum}: `, '') : datos[i][7]
+        };
+        Logger.log(`Orden encontrada en ${nombreHoja}: ${JSON.stringify(ordenEncontrada)}`);
+        break;
+      }
+    }
+    if (ordenEncontrada) break;
+  }
+  
+  if (!ordenEncontrada) {
+    Logger.log(`ERROR: No se encontró la orden ${ordenNum}`);
+    showAlert('Error', `No se encontró la orden ${ordenNum}`);
+    return;
+  }
+  
+  const confirmar = ui.alert(
+    'Confirmar Prueba',
+    `¿Enviar notificación de ${esLiberada ? 'LIBERACIÓN' : 'RETENCIÓN'} para?\n\n` +
+    `Orden: ${ordenEncontrada.orden}\n` +
+    `Cliente: ${ordenEncontrada.cliente}\n` +
+    `Zona: ${ordenEncontrada.zona}\n\n` +
+    'NOTA: Esto es solo una prueba.',
+    ui.ButtonSet.YES_NO
+  );
+  
+  if (confirmar !== ui.Button.YES) {
+    Logger.log('Usuario canceló la confirmación');
+    return;
+  }
+  
+  const ordenesParaEnviar = [{
+    orden: ordenEncontrada.orden,
+    tipo: `${esLiberada ? 'Orden liberada' : tipo} (PRUEBA)`,
+    datos: ordenEncontrada,
+    esLiberada
+  }];
+  
+  const sheets = { control: getSheet(CONFIG.HOJAS.control.nombre, CONFIG.HOJAS.control.headers) };
+  const fechaHoy = formatDate(getHoraColombia());
+  const horaActual = formatDate(getHoraColombia(), "HH:mm:ss");
+  
+  Logger.log('Enviando notificación de prueba...');
+  enviarNotificaciones(ordenesParaEnviar, sheets, {}, fechaHoy, horaActual);
+  
+  showAlert('✅ Prueba Enviada',
+    `Se envió la notificación para la orden ${ordenNum}.\n\n` +
+    `Revisa WhatsApp del representante de ${ordenEncontrada.zona}.`
+  );
+  
+  Logger.log('===== FIN ejecutarPrueba() =====');
+}
+
+function probarNotificacionOrdenRetenida() {
+  Logger.log('===== INICIO probarNotificacionOrdenRetenida() =====');
+  const ui = SpreadsheetApp.getUi();
+  const tipoNotificacion = ui.alert(
+    'Tipo de Notificación',
+    '¿Qué tipo de notificación quieres enviar?\n\n' +
+    'YES = Nueva Orden Retenida\n' +
+    'NO = Orden que Volvió a Retención',
+    ui.ButtonSet.YES_NO_CANCEL
+  );
+  
+  if (tipoNotificacion === ui.Button.CANCEL) {
+    Logger.log('Usuario canceló selección de tipo');
+    return;
+  }
+  
+  const tipo = tipoNotificacion === ui.Button.YES ? 
+    'Nueva orden retenida' : 'Orden volvió a retención';
+  
+  Logger.log(`Tipo seleccionado: ${tipo}`);
+  ejecutarPrueba(tipo, false);
+  Logger.log('===== FIN probarNotificacionOrdenRetenida() =====');
+}
+
+function probarLiberacionOrdenExistente() {
+  Logger.log('===== INICIO probarLiberacionOrdenExistente() =====');
+  ejecutarPrueba('Orden liberada', true);
+  Logger.log('===== FIN probarLiberacionOrdenExistente() =====');
+}
+
+function probarNotificacionOrdenLiberada() {
+  Logger.log('===== INICIO probarNotificacionOrdenLiberada() =====');
+  ejecutarPrueba('Orden liberada', true);
+  Logger.log('===== FIN probarNotificacionOrdenLiberada() =====');
+}
+
+function probarNotificacionRetenidaPersonalizada() {
+  Logger.log('===== INICIO probarNotificacionRetenidaPersonalizada() =====');
+  const ui = SpreadsheetApp.getUi();
+  const campos = ['Número de orden:', 'Nombre del cliente:', 'Zona (debe existir en ContactosZonas):', 'Motivo de retención:'];
+  const valores = [];
+  
+  for (const campo of campos) {
+    const response = ui.prompt('Datos de Prueba', campo, ui.ButtonSet.OK_CANCEL);
+    if (response.getSelectedButton() !== ui.Button.OK) {
+      Logger.log('Usuario canceló ingreso de datos');
+      return;
+    }
+    valores.push(response.getResponseText().trim());
+  }
+  
+  const [ordenNum, cliente, zona, observacion] = valores;
+  
+  Logger.log(`Datos ingresados: Orden=${ordenNum}, Cliente=${cliente}, Zona=${zona}, Observación=${observacion}`);
+  
+  const confirmar = ui.alert(
+    'Confirmar Prueba Personalizada',
+    `¿Enviar notificación de RETENCIÓN con estos datos?\n\n` +
+    `Orden: ${ordenNum}\n` +
+    `Cliente: ${cliente}\n` +
+    `Zona: ${zona}\n` +
+    `Motivo: ${observacion || "PRUEBA DEL SISTEMA"}\n\n` +
+    'NOTA: Esto es solo una prueba.',
+    ui.ButtonSet.YES_NO
+  );
+  
+  if (confirmar !== ui.Button.YES) {
+    Logger.log('Usuario canceló confirmación');
+    return;
+  }
+  
+  const ordenesParaEnviar = [{
+    orden: ordenNum,
+    tipo: 'Nueva orden retenida (PRUEBA PERSONALIZADA)',
+    datos: {
+      zona,
+      cliente,
+      fecha: getHoraColombia(),
+      observacion: observacion || "PRUEBA DEL SISTEMA"
+    },
+    esLiberada: false
+  }];
+  
+  const sheets = { control: getSheet(CONFIG.HOJAS.control.nombre, CONFIG.HOJAS.control.headers) };
+  const fechaHoy = formatDate(getHoraColombia());
+  const horaActual = formatDate(getHoraColombia(), "HH:mm:ss");
+  
+  Logger.log('Enviando notificación personalizada...');
+  enviarNotificaciones(ordenesParaEnviar, sheets, {}, fechaHoy, horaActual);
+  
+  showAlert('✅ Prueba Personalizada Enviada',
+    `Se envió la notificación de retención.\n\n` +
+    `Revisa WhatsApp del representante de ${zona}.`
+  );
+  
+  Logger.log('===== FIN probarNotificacionRetenidaPersonalizada() =====');
+}
+
+// ================== GESTIÓN DE CONTACTOS ==================
+
+function gestionarContactos() {
+  Logger.log('===== INICIO gestionarContactos() =====');
+  const hojaContactos = getSheet(CONFIG.HOJAS.contactos.nombre, null, false);
+  
+  if (!hojaContactos) {
+    Logger.log('Hoja de contactos no encontrada');
+    const ui = SpreadsheetApp.getUi();
+    if (ui.alert('Hoja de Contactos no encontrada',
+        '¿Deseas crear la hoja de contactos ahora?',
+        ui.ButtonSet.YES_NO) === ui.Button.YES) {
+      configuracionInicial();
+    }
+    return;
+  }
+  
+  const datos = hojaContactos.getDataRange().getValues().slice(1);
+  Logger.log(`Total de zonas en hoja: ${datos.length}`);
+  
+  const stats = datos.reduce((acc, row) => {
+    acc[row[4] === "SI" ? 'activos' : 'inactivos']++;
+    return acc;
+  }, { activos: 0, inactivos: 0 });
+  
+  Logger.log(`Contactos activos: ${stats.activos}, Inactivos: ${stats.inactivos}`);
+  
+  const zonasSinContacto = datos
+    .filter(row => row[4] !== "SI" || !row[2])
+    .map(row => row[0]);
+  
+  Logger.log(`Zonas sin contacto activo: ${zonasSinContacto.length}`);
+  
+  let mensaje = `Total de zonas: ${datos.length}\n` +
+    `Contactos activos: ${stats.activos}\n` +
+    `Contactos inactivos: ${stats.inactivos}\n\n`;
+  
+  if (zonasSinContacto.length > 0) {
+    mensaje += `⚠️ ZONAS SIN CONTACTO ACTIVO:\n` +
+      zonasSinContacto.slice(0, 10).join('\n') +
+      (zonasSinContacto.length > 10 ? `\n... y ${zonasSinContacto.length - 10} más` : '') +
+      '\n\n';
+  }
+  
+  mensaje += 'Para editar contactos, ve a la hoja "ContactosZonas"';
+  
+  showAlert('📱 Gestión de Contactos', mensaje);
+  Logger.log('===== FIN gestionarContactos() =====');
+}
+
+function verificarContactosZona() {
+  Logger.log('===== INICIO verificarContactosZona() =====');
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.prompt(
+    'Verificar Contacto de Zona',
+    'Ingresa el nombre de la zona a verificar:',
+    ui.ButtonSet.OK_CANCEL
+  );
+  
+  if (response.getSelectedButton() !== ui.Button.OK) {
+    Logger.log('Usuario canceló verificación');
+    return;
+  }
+  
+  const zonaBuscada = response.getResponseText().trim();
+  Logger.log(`Buscando zona: ${zonaBuscada}`);
+  
+  if (!zonaBuscada) {
+    Logger.log('ERROR: No se ingresó nombre de zona');
+    showAlert('Error', 'Debes ingresar un nombre de zona');
+    return;
+  }
+  
+  const contactos = cargarContactosZonas();
+  const hojaContactos = getSheet(CONFIG.HOJAS.contactos.nombre);
+  const datos = hojaContactos.getDataRange().getValues();
+  
+  let zonaEncontrada = null;
+  let datosZona = null;
+  
+  for (let i = 1; i < datos.length; i++) {
+    const zona = String(datos[i][0]);
+    if (zona.toLowerCase().includes(zonaBuscada.toLowerCase())) {
+      zonaEncontrada = zona;
+      datosZona = {
+        zona: datos[i][0],
+        nombre: datos[i][1],
+        whatsapp: datos[i][2],
+        email: datos[i][3],
+        activo: datos[i][4]
+      };
+      Logger.log(`Zona encontrada: ${JSON.stringify(datosZona)}`);
+      break;
+    }
+  }
+  
+  if (!zonaEncontrada) {
+    Logger.log(`No se encontró zona que contenga: ${zonaBuscada}`);
+    showAlert('Zona No Encontrada', 
+      `No se encontró ninguna zona que contenga "${zonaBuscada}"`);
+    return;
+  }
+  
+  const mensaje = `📍 INFORMACIÓN DE LA ZONA\n\n` +
+    `Zona: ${datosZona.zona}\n` +
+    `Representante: ${datosZona.nombre}\n` +
+    `WhatsApp: ${datosZona.whatsapp || 'NO CONFIGURADO'}\n` +
+    `Email: ${datosZona.email || 'No configurado'}\n` +
+    `Estado: ${datosZona.activo}\n\n` +
+    `${datosZona.activo === 'SI' && datosZona.whatsapp ? 
+      '✅ Esta zona ESTÁ recibiendo notificaciones' : 
+      '❌ Esta zona NO está recibiendo notificaciones'}`;
+  
+  showAlert('Información de Contacto', mensaje);
+  Logger.log('===== FIN verificarContactosZona() =====');
+}
+
+// ================== PRUEBA TODO EL SISTEMA ==================
+
+function probarTodoElSistema() {
+  Logger.log('===== INICIO PRUEBA EXHAUSTIVA DE TODO EL SISTEMA =====');
+  const ui = SpreadsheetApp.getUi();
+  
+  const confirmar = ui.alert(
+    '🔬 Prueba Exhaustiva del Sistema',
+    'Esta prueba ejecutará TODAS las funciones del sistema:\n\n' +
+    '1. Diagnóstico completo del sistema\n' +
+    '2. Prueba de notificación retenida (orden existente)\n' +
+    '3. Prueba de notificación retenida (personalizada)\n' +
+    '4. Prueba de notificación liberada\n' +
+    '5. Verificación de estadísticas\n' +
+    '6. Verificación de contactos\n\n' +
+    '⚠️ Se enviarán varias notificaciones de prueba\n\n' +
+    '¿Deseas continuar?',
+    ui.ButtonSet.YES_NO
+  );
+  
+  if (confirmar !== ui.Button.YES) {
+    Logger.log('Usuario canceló la prueba exhaustiva');
+    return;
+  }
+  
+  const resultadosPruebas = {
+    sistemaCompleto: { estado: '⏳', detalles: '', logs: [] },
+    ordenRetenidaExistente: { estado: '⏳', detalles: '', logs: [] },
+    ordenRetenidaPersonalizada: { estado: '⏳', detalles: '', logs: [] },
+    ordenLiberada: { estado: '⏳', detalles: '', logs: [] },
+    estadisticas: { estado: '⏳', detalles: '', logs: [] },
+    contactos: { estado: '⏳', detalles: '', logs: [] }
+  };
+  
+  // Función auxiliar para capturar logs
+  function capturarLogs(funcion, nombrePrueba) {
+    const logsAntes = Logger.getLog();
+    let resultado = { exito: false, error: null };
+    
+    try {
+      funcion();
+      resultado.exito = true;
+    } catch (e) {
+      resultado.error = e.message;
+      Logger.log(`ERROR en ${nombrePrueba}: ${e.message}`);
+    }
+    
+    const logsDespues = Logger.getLog();
+    const nuevosLogs = logsDespues.substring(logsAntes.length);
+    
+    return { resultado, logs: nuevosLogs };
+  }
+  
+  // 1. PRUEBA DEL SISTEMA COMPLETO
+  Logger.log('\n========== 1. EJECUTANDO PRUEBA DEL SISTEMA COMPLETO ==========');
+  try {
+    // Ejecutar la prueba pero interceptar el alert
+    const originalAlert = SpreadsheetApp.getUi().alert;
+    let reporteCapturado = '';
+    
+    SpreadsheetApp.getUi().alert = function(titulo, mensaje, botones) {
+      if (titulo === 'Resultado de la Prueba') {
+        reporteCapturado = mensaje;
+      }
+      return SpreadsheetApp.getUi().Button.OK;
+    };
+    
+    probarSistemaCompleto();
+    
+    SpreadsheetApp.getUi().alert = originalAlert;
+    
+    if (reporteCapturado.includes('SISTEMA FUNCIONANDO CORRECTAMENTE')) {
+      resultadosPruebas.sistemaCompleto.estado = '✅';
+      resultadosPruebas.sistemaCompleto.detalles = 'Sistema base funcionando correctamente';
+    } else {
+      resultadosPruebas.sistemaCompleto.estado = '⚠️';
+      resultadosPruebas.sistemaCompleto.detalles = 'Sistema con advertencias (ver logs)';
+    }
+    resultadosPruebas.sistemaCompleto.logs.push(reporteCapturado);
+  } catch (e) {
+    resultadosPruebas.sistemaCompleto.estado = '❌';
+    resultadosPruebas.sistemaCompleto.detalles = `Error: ${e.message}`;
+    Logger.log(`ERROR en prueba sistema completo: ${e.message}`);
+  }
+  
+  // 2. PRUEBA ORDEN RETENIDA (BUSCAR EXISTENTE)
+  Logger.log('\n========== 2. PRUEBA ORDEN RETENIDA EXISTENTE ==========');
+  try {
+    // Primero buscar una orden real en las hojas
+    const hojaOrdenes = getSheet(CONFIG.HOJAS.ordenes.nombre, null, false);
+    let ordenPrueba = null;
+    
+    if (hojaOrdenes && hojaOrdenes.getLastRow() > 1) {
+      const datos = hojaOrdenes.getDataRange().getValues();
+      if (datos.length > 1) {
+        ordenPrueba = datos[1][2]; // Columna C = Orden
+        Logger.log(`Orden encontrada para prueba: ${ordenPrueba}`);
+      }
+    }
+    
+    if (ordenPrueba) {
+      // Simular la ejecución sin interacción del usuario
+      const ordenEncontrada = {
+        zona: hojaOrdenes.getRange(2, 1).getValue(),
+        cliente: hojaOrdenes.getRange(2, 2).getValue(),
+        orden: ordenPrueba,
+        fecha: hojaOrdenes.getRange(2, 4).getValue(),
+        observacion: hojaOrdenes.getRange(2, 5).getValue()
+      };
+      
+      Logger.log(`Datos de orden para prueba: ${JSON.stringify(ordenEncontrada)}`);
+      
+      // Crear notificación de prueba
+      const ordenesParaEnviar = [{
+        orden: ordenEncontrada.orden,
+        tipo: 'Nueva orden retenida (PRUEBA AUTOMÁTICA)',
+        datos: ordenEncontrada,
+        esLiberada: false
+      }];
+      
+      const sheets = { control: getSheet(CONFIG.HOJAS.control.nombre, CONFIG.HOJAS.control.headers) };
+      const fechaHoy = formatDate(getHoraColombia());
+      const horaActual = formatDate(getHoraColombia(), "HH:mm:ss");
+      
+      enviarNotificaciones(ordenesParaEnviar, sheets, {}, fechaHoy, horaActual);
+      
+      resultadosPruebas.ordenRetenidaExistente.estado = '✅';
+      resultadosPruebas.ordenRetenidaExistente.detalles = `Probado con orden ${ordenPrueba}`;
+    } else {
+      resultadosPruebas.ordenRetenidaExistente.estado = '⚠️';
+      resultadosPruebas.ordenRetenidaExistente.detalles = 'No hay órdenes retenidas para probar';
+    }
+  } catch (e) {
+    resultadosPruebas.ordenRetenidaExistente.estado = '❌';
+    resultadosPruebas.ordenRetenidaExistente.detalles = `Error: ${e.message}`;
+    Logger.log(`ERROR en prueba orden retenida existente: ${e.message}`);
+  }
+  
+  // 3. PRUEBA ORDEN RETENIDA PERSONALIZADA
+  Logger.log('\n========== 3. PRUEBA ORDEN RETENIDA PERSONALIZADA ==========');
+  try {
+    const ordenesParaEnviar = [{
+      orden: 'TEST-' + Date.now(),
+      tipo: 'Nueva orden retenida (PRUEBA PERSONALIZADA AUTOMÁTICA)',
+      datos: {
+        zona: 'Zona de Prueba Automática',
+        cliente: 'Cliente de Prueba Automática',
+        fecha: getHoraColombia(),
+        observacion: 'PRUEBA AUTOMÁTICA DEL SISTEMA - IGNORAR'
+      },
+      esLiberada: false
+    }];
+    
+    const sheets = { control: getSheet(CONFIG.HOJAS.control.nombre, CONFIG.HOJAS.control.headers) };
+    const fechaHoy = formatDate(getHoraColombia());
+    const horaActual = formatDate(getHoraColombia(), "HH:mm:ss");
+    
+    Logger.log(`Enviando notificación personalizada de prueba...`);
+    enviarNotificaciones(ordenesParaEnviar, sheets, {}, fechaHoy, horaActual);
+    
+    resultadosPruebas.ordenRetenidaPersonalizada.estado = '✅';
+    resultadosPruebas.ordenRetenidaPersonalizada.detalles = 'Notificación personalizada enviada';
+  } catch (e) {
+    resultadosPruebas.ordenRetenidaPersonalizada.estado = '❌';
+    resultadosPruebas.ordenRetenidaPersonalizada.detalles = `Error: ${e.message}`;
+    Logger.log(`ERROR en prueba orden retenida personalizada: ${e.message}`);
+  }
+  
+  // 4. PRUEBA ORDEN LIBERADA
+  Logger.log('\n========== 4. PRUEBA ORDEN LIBERADA ==========');
+  try {
+    const ordenesParaEnviar = [{
+      orden: 'LIB-' + Date.now(),
+      tipo: 'Orden liberada (PRUEBA AUTOMÁTICA)',
+      datos: {
+        zona: 'Zona de Prueba Liberación',
+        cliente: 'Cliente Liberado de Prueba',
+        fecha: formatDate(getHoraColombia()),
+        hora: formatDate(getHoraColombia(), "HH:mm:ss"),
+        observacion: 'ORDEN LIBERADA - PRUEBA AUTOMÁTICA'
+      },
+      esLiberada: true
+    }];
+    
+    const sheets = { control: getSheet(CONFIG.HOJAS.control.nombre, CONFIG.HOJAS.control.headers) };
+    const fechaHoy = formatDate(getHoraColombia());
+    const horaActual = formatDate(getHoraColombia(), "HH:mm:ss");
+    
+    Logger.log(`Enviando notificación de liberación de prueba...`);
+    enviarNotificaciones(ordenesParaEnviar, sheets, {}, fechaHoy, horaActual);
+    
+    resultadosPruebas.ordenLiberada.estado = '✅';
+    resultadosPruebas.ordenLiberada.detalles = 'Notificación de liberación enviada';
+  } catch (e) {
+    resultadosPruebas.ordenLiberada.estado = '❌';
+    resultadosPruebas.ordenLiberada.detalles = `Error: ${e.message}`;
+    Logger.log(`ERROR en prueba orden liberada: ${e.message}`);
+  }
+  
+  // 5. VERIFICAR ESTADÍSTICAS
+  Logger.log('\n========== 5. VERIFICANDO ESTADÍSTICAS ==========');
+  try {
+    const hojaControl = getSheet(CONFIG.HOJAS.control.nombre, null, false);
+    if (hojaControl && hojaControl.getLastRow() > 1) {
+      const totalRegistros = hojaControl.getLastRow() - 1;
+      Logger.log(`Total de registros en control: ${totalRegistros}`);
+      
+      resultadosPruebas.estadisticas.estado = '✅';
+      resultadosPruebas.estadisticas.detalles = `${totalRegistros} registros en control`;
+    } else {
+      resultadosPruebas.estadisticas.estado = '⚠️';
+      resultadosPruebas.estadisticas.detalles = 'Sin datos de control aún';
+    }
+  } catch (e) {
+    resultadosPruebas.estadisticas.estado = '❌';
+    resultadosPruebas.estadisticas.detalles = `Error: ${e.message}`;
+    Logger.log(`ERROR verificando estadísticas: ${e.message}`);
+  }
+  
+  // 6. VERIFICAR CONTACTOS
+  Logger.log('\n========== 6. VERIFICANDO CONTACTOS ==========');
+  try {
+    const contactos = cargarContactosZonas();
+    const totalContactos = Object.keys(contactos.zonaANumero).length;
+    const zonasEjemplo = Object.keys(contactos.zonaANumero).slice(0, 3);
+    
+    Logger.log(`Total contactos activos: ${totalContactos}`);
+    Logger.log(`Zonas ejemplo: ${zonasEjemplo.join(', ')}`);
+    
+    resultadosPruebas.contactos.estado = totalContactos > 0 ? '✅' : '❌';
+    resultadosPruebas.contactos.detalles = `${totalContactos} contactos activos`;
+  } catch (e) {
+    resultadosPruebas.contactos.estado = '❌';
+    resultadosPruebas.contactos.detalles = `Error: ${e.message}`;
+    Logger.log(`ERROR verificando contactos: ${e.message}`);
+  }
+  
+  // GENERAR REPORTE FINAL DETALLADO
+  Logger.log('\n========== GENERANDO REPORTE FINAL ==========');
+  
+  let reporte = '🔬 REPORTE DE PRUEBA EXHAUSTIVA DEL SISTEMA\n';
+  reporte += '=' .repeat(50) + '\n\n';
+  
+  const pruebasOK = Object.values(resultadosPruebas).filter(r => r.estado === '✅').length;
+  const pruebasError = Object.values(resultadosPruebas).filter(r => r.estado === '❌').length;
+  const pruebasAdvertencia = Object.values(resultadosPruebas).filter(r => r.estado === '⚠️').length;
+  
+  reporte += `📊 RESUMEN: ${pruebasOK} OK, ${pruebasError} ERROR, ${pruebasAdvertencia} ADVERTENCIAS\n\n`;
+  
+  reporte += '1️⃣ DIAGNÓSTICO DEL SISTEMA: ' + resultadosPruebas.sistemaCompleto.estado + '\n';
+  reporte += '   ' + resultadosPruebas.sistemaCompleto.detalles + '\n\n';
+  
+  reporte += '2️⃣ NOTIFICACIÓN RETENIDA (EXISTENTE): ' + resultadosPruebas.ordenRetenidaExistente.estado + '\n';
+  reporte += '   ' + resultadosPruebas.ordenRetenidaExistente.detalles + '\n\n';
+  
+  reporte += '3️⃣ NOTIFICACIÓN RETENIDA (PERSONALIZADA): ' + resultadosPruebas.ordenRetenidaPersonalizada.estado + '\n';
+  reporte += '   ' + resultadosPruebas.ordenRetenidaPersonalizada.detalles + '\n\n';
+  
+  reporte += '4️⃣ NOTIFICACIÓN LIBERADA: ' + resultadosPruebas.ordenLiberada.estado + '\n';
+  reporte += '   ' + resultadosPruebas.ordenLiberada.detalles + '\n\n';
+  
+  reporte += '5️⃣ ESTADÍSTICAS: ' + resultadosPruebas.estadisticas.estado + '\n';
+  reporte += '   ' + resultadosPruebas.estadisticas.detalles + '\n\n';
+  
+  reporte += '6️⃣ CONTACTOS: ' + resultadosPruebas.contactos.estado + '\n';
+  reporte += '   ' + resultadosPruebas.contactos.detalles + '\n\n';
+  
+  reporte += '=' .repeat(50) + '\n\n';
+  
+  if (pruebasError > 0) {
+    reporte += '⚠️ ACCIONES REQUERIDAS:\n';
+    Object.entries(resultadosPruebas).forEach(([prueba, resultado]) => {
+      if (resultado.estado === '❌') {
+        reporte += `• Revisar: ${prueba} - ${resultado.detalles}\n`;
+      }
+    });
+  } else if (pruebasAdvertencia > 0) {
+    reporte += '⚠️ ADVERTENCIAS:\n';
+    Object.entries(resultadosPruebas).forEach(([prueba, resultado]) => {
+      if (resultado.estado === '⚠️') {
+        reporte += `• ${prueba}: ${resultado.detalles}\n`;
+      }
+    });
+  } else {
+    reporte += '✅ ¡TODAS LAS PRUEBAS PASARON EXITOSAMENTE!\n';
+    reporte += 'El sistema está funcionando correctamente en todos sus componentes.';
+  }
+  
+  // Mostrar el reporte
+  ui.alert('Resultado de Prueba Exhaustiva', reporte, ui.ButtonSet.OK);
+  
+  // Preguntar si quiere ver los logs detallados
+  const verLogs = ui.alert(
+    'Logs Detallados',
+    '¿Deseas ver los logs detallados de todas las pruebas?\n\n' +
+    'Esto puede ser útil para debugging.',
+    ui.ButtonSet.YES_NO
+  );
+  
+  if (verLogs === ui.Button.YES) {
+    // Crear un documento temporal con todos los logs
+    const logsCompletos = Logger.getLog();
+    
+    // Crear una nueva hoja temporal para los logs
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const hojaLogs = ss.insertSheet('LOGS_PRUEBA_' + new Date().getTime());
+    hojaLogs.getRange('A1').setValue('LOGS COMPLETOS DE LA PRUEBA EXHAUSTIVA');
+    hojaLogs.getRange('A2').setValue('Fecha: ' + new Date());
+    hojaLogs.getRange('A3').setValue('=' .repeat(80));
+    
+    // Dividir los logs en líneas y escribirlos
+    const lineasLog = logsCompletos.split('\n');
+    const datosLogs = lineasLog.map(linea => [linea]);
+    
+    if (datosLogs.length > 0) {
+      hojaLogs.getRange(5, 1, datosLogs.length, 1).setValues(datosLogs);
+    }
+    
+    // Formatear la hoja
+    hojaLogs.setColumnWidth(1, 800);
+    hojaLogs.getRange('A1:A3').setFontWeight('bold');
+    
+    ui.alert(
+      'Logs Guardados',
+      `Los logs completos se han guardado en la hoja:\n"${hojaLogs.getName()}"\n\n` +
+      'Puedes revisarlos y eliminar la hoja cuando termines.',
+      ui.ButtonSet.OK
+    );
+  }
+  
+  Logger.log('\n' + reporte);
+  Logger.log('===== FIN PRUEBA EXHAUSTIVA DE TODO EL SISTEMA =====');
+}
+
+// ================== PRUEBA COMPLETA DEL SISTEMA ==================
+
+function probarSistemaCompleto() {
+  Logger.log('===== INICIO PRUEBA COMPLETA DEL SISTEMA =====');
+  const ui = SpreadsheetApp.getUi();
+  
+  const confirmar = ui.alert(
+    '🧪 Prueba Completa del Sistema',
+    'Esta prueba verificará:\n\n' +
+    '1. Credenciales guardadas\n' +
+    '2. Conexión a base de datos\n' +
+    '3. Hojas del spreadsheet\n' +
+    '4. Carga de contactos\n' +
+    '5. Lectura de órdenes\n' +
+    '6. Envío de notificación de prueba\n\n' +
+    '¿Deseas continuar?',
+    ui.ButtonSet.YES_NO
+  );
+  
+  if (confirmar !== ui.Button.YES) {
+    Logger.log('Usuario canceló la prueba completa');
+    return;
+  }
+  
+  const resultados = {
+    credenciales: { estado: '⏳', detalles: '' },
+    baseDatos: { estado: '⏳', detalles: '' },
+    hojas: { estado: '⏳', detalles: '' },
+    contactos: { estado: '⏳', detalles: '' },
+    ordenesRetenidas: { estado: '⏳', detalles: '' },
+    ordenesLiberadas: { estado: '⏳', detalles: '' },
+    notificacion: { estado: '⏳', detalles: '' }
+  };
+  
+  // 1. VERIFICAR CREDENCIALES
+  Logger.log('\n--- VERIFICANDO CREDENCIALES ---');
+  try {
+    const credenciales = getCredenciales();
+    const credencialesFaltantes = [];
+    
+    if (!credenciales.DB.url) credencialesFaltantes.push('DB_URL');
+    if (!credenciales.DB.user) credencialesFaltantes.push('DB_USER');
+    if (!credenciales.DB.pass) credencialesFaltantes.push('DB_PASS');
+    if (!credenciales.API.url) credencialesFaltantes.push('API_URL');
+    if (!credenciales.API.token) credencialesFaltantes.push('API_TOKEN');
+    if (!credenciales.API.channel) credencialesFaltantes.push('API_CHANNEL');
+    
+    if (credencialesFaltantes.length === 0) {
+      resultados.credenciales.estado = '✅';
+      resultados.credenciales.detalles = 'Todas las credenciales están configuradas';
+      Logger.log('✅ Todas las credenciales encontradas');
+    } else {
+      resultados.credenciales.estado = '❌';
+      resultados.credenciales.detalles = `Faltan: ${credencialesFaltantes.join(', ')}`;
+      Logger.log(`❌ Credenciales faltantes: ${credencialesFaltantes.join(', ')}`);
+    }
+  } catch (e) {
+    resultados.credenciales.estado = '❌';
+    resultados.credenciales.detalles = `Error: ${e.message}`;
+    Logger.log(`❌ Error verificando credenciales: ${e.message}`);
+  }
+  
+  // 2. VERIFICAR CONEXIÓN A BASE DE DATOS
+  if (resultados.credenciales.estado === '✅') {
+    Logger.log('\n--- PROBANDO CONEXIÓN A BASE DE DATOS ---');
+    try {
+      const credenciales = getCredenciales();
+      const conn = Jdbc.getConnection(credenciales.DB.url, credenciales.DB.user, credenciales.DB.pass);
+      
+      // Prueba simple de conexión
+      const stmt = conn.createStatement();
+      const results = stmt.executeQuery("SELECT 1 AS test");
+      results.next();
+      const testResult = results.getInt("test");
+      stmt.close();
+      conn.close();
+      
+      if (testResult === 1) {
+        resultados.baseDatos.estado = '✅';
+        resultados.baseDatos.detalles = 'Conexión exitosa';
+        Logger.log('✅ Conexión a base de datos exitosa');
+      }
+    } catch (e) {
+      resultados.baseDatos.estado = '❌';
+      resultados.baseDatos.detalles = `Error: ${e.message}`;
+      Logger.log(`❌ Error conectando a base de datos: ${e.message}`);
+    }
+  } else {
+    resultados.baseDatos.estado = '⚠️';
+    resultados.baseDatos.detalles = 'No se pudo probar (faltan credenciales)';
+  }
+  
+  // 3. VERIFICAR HOJAS DEL SPREADSHEET
+  Logger.log('\n--- VERIFICANDO HOJAS DEL SPREADSHEET ---');
+  try {
+    const hojasRequeridas = Object.values(CONFIG.HOJAS).map(h => h.nombre);
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const hojasExistentes = ss.getSheets().map(s => s.getName());
+    const hojasFaltantes = hojasRequeridas.filter(h => !hojasExistentes.includes(h));
+    
+    if (hojasFaltantes.length === 0) {
+      resultados.hojas.estado = '✅';
+      resultados.hojas.detalles = `Todas las hojas existen (${hojasRequeridas.length})`;
+      Logger.log('✅ Todas las hojas requeridas existen');
+    } else {
+      // Intentar crear las hojas faltantes
+      Logger.log(`Creando ${hojasFaltantes.length} hojas faltantes...`);
+      hojasFaltantes.forEach(nombreHoja => {
+        const configHoja = Object.values(CONFIG.HOJAS).find(h => h.nombre === nombreHoja);
+        if (configHoja) {
+          getSheet(configHoja.nombre, configHoja.headers);
+        }
+      });
+      resultados.hojas.estado = '✅';
+      resultados.hojas.detalles = `Creadas ${hojasFaltantes.length} hojas faltantes`;
+    }
+  } catch (e) {
+    resultados.hojas.estado = '❌';
+    resultados.hojas.detalles = `Error: ${e.message}`;
+    Logger.log(`❌ Error verificando hojas: ${e.message}`);
+  }
+  
+  // 4. VERIFICAR CARGA DE CONTACTOS
+  Logger.log('\n--- VERIFICANDO CONTACTOS ---');
+  try {
+    const contactos = cargarContactosZonas();
+    const totalContactos = Object.keys(contactos.zonaANumero).length;
+    
+    if (totalContactos > 0) {
+      resultados.contactos.estado = '✅';
+      resultados.contactos.detalles = `${totalContactos} contactos activos cargados`;
+      Logger.log(`✅ ${totalContactos} contactos cargados exitosamente`);
+      
+      // Verificar algunas zonas específicas
+      const zonasImportantes = ['Zona1Cundinamarca-Boyacá-Santa', 'Zona17-Valle', 'Zona 23 - Caribe seco'];
+      const zonasSinContacto = zonasImportantes.filter(z => !contactos.zonaANumero[z]);
+      
+      if (zonasSinContacto.length > 0) {
+        resultados.contactos.detalles += ` (Advertencia: ${zonasSinContacto.length} zonas importantes sin contacto)`;
+      }
+    } else {
+      resultados.contactos.estado = '❌';
+      resultados.contactos.detalles = 'No se encontraron contactos activos';
+    }
+  } catch (e) {
+    resultados.contactos.estado = '❌';
+    resultados.contactos.detalles = `Error: ${e.message}`;
+    Logger.log(`❌ Error cargando contactos: ${e.message}`);
+  }
+  
+  // 5. VERIFICAR LECTURA DE ÓRDENES RETENIDAS
+  if (resultados.baseDatos.estado === '✅') {
+    Logger.log('\n--- VERIFICANDO LECTURA DE ÓRDENES RETENIDAS ---');
+    try {
+      const credenciales = getCredenciales();
+      const conn = Jdbc.getConnection(credenciales.DB.url, credenciales.DB.user, credenciales.DB.pass);
+      
+      const query = `
+        SELECT TOP 5 d.OrderHed_OrderNum, d.Zona, d.Customer_Name
+        FROM EpicorRepTran.dbo.udvPortalCustDtlOV d WITH (NOLOCK)
+        WHERE d.CreditoRetenido = 1 AND d.OrderHed_VoidOrder = 0 
+          AND d.Zona != 'Comercial Agrosoil'
+          AND (d.CreditOverride IS NULL OR d.CreditOverride = 0)
+        ORDER BY d.OrderHed_OrderNum DESC`;
+      
+      const stmt = conn.createStatement();
+      const results = stmt.executeQuery(query);
+      
+      let contador = 0;
+      while (results.next() && contador < 5) {
+        contador++;
+      }
+      
+      stmt.close();
+      conn.close();
+      
+      resultados.ordenesRetenidas.estado = '✅';
+      resultados.ordenesRetenidas.detalles = `Query ejecutada exitosamente (${contador} órdenes encontradas)`;
+      Logger.log(`✅ Query de órdenes retenidas exitosa: ${contador} órdenes`);
+    } catch (e) {
+      resultados.ordenesRetenidas.estado = '❌';
+      resultados.ordenesRetenidas.detalles = `Error: ${e.message}`;
+      Logger.log(`❌ Error leyendo órdenes retenidas: ${e.message}`);
+    }
+  } else {
+    resultados.ordenesRetenidas.estado = '⚠️';
+    resultados.ordenesRetenidas.detalles = 'No se pudo probar (sin conexión a BD)';
+  }
+  
+  // 6. VERIFICAR LECTURA DE ÓRDENES LIBERADAS
+  if (resultados.baseDatos.estado === '✅') {
+    Logger.log('\n--- VERIFICANDO LECTURA DE ÓRDENES LIBERADAS ---');
+    try {
+      const credenciales = getCredenciales();
+      const conn = Jdbc.getConnection(credenciales.DB.url, credenciales.DB.user, credenciales.DB.pass);
+      
+      const query = `
+        SELECT TOP 5 d.OrderHed_OrderNum, d.Zona, d.Customer_Name
+        FROM EpicorRepTran.dbo.udvPortalCustDtlOV d WITH (NOLOCK)
+        JOIN EpicorRepTran.dbo.OrderHed oh WITH (NOLOCK) 
+          ON d.OrderHed_OrderNum = oh.OrderNum AND d.OrderHed_Company = oh.Company
+        WHERE d.CreditoRetenido = 0 AND d.OrderHed_VoidOrder = 0 
+          AND d.Zona != 'Comercial Agrosoil' AND oh.CreditOverride = 1 
+          AND d.FechaLiberacionCredito IS NOT NULL
+          AND d.FechaLiberacionCredito >= DATEADD(day, -7, GETDATE())
+        ORDER BY d.FechaLiberacionCredito DESC`;
+      
+      const stmt = conn.createStatement();
+      const results = stmt.executeQuery(query);
+      
+      let contador = 0;
+      while (results.next() && contador < 5) {
+        contador++;
+      }
+      
+      stmt.close();
+      conn.close();
+      
+      resultados.ordenesLiberadas.estado = '✅';
+      resultados.ordenesLiberadas.detalles = `Query ejecutada exitosamente (${contador} órdenes encontradas)`;
+      Logger.log(`✅ Query de órdenes liberadas exitosa: ${contador} órdenes`);
+    } catch (e) {
+      resultados.ordenesLiberadas.estado = '❌';
+      resultados.ordenesLiberadas.detalles = `Error: ${e.message}`;
+      Logger.log(`❌ Error leyendo órdenes liberadas: ${e.message}`);
+    }
+  } else {
+    resultados.ordenesLiberadas.estado = '⚠️';
+    resultados.ordenesLiberadas.detalles = 'No se pudo probar (sin conexión a BD)';
+  }
+  
+  // 7. VERIFICAR ENVÍO DE NOTIFICACIÓN
+  Logger.log('\n--- VERIFICANDO ENVÍO DE NOTIFICACIÓN ---');
+  const preguntarNotificacion = ui.alert(
+    'Prueba de Notificación',
+    '¿Deseas enviar una notificación de prueba?\n\n' +
+    'Se enviará al número por defecto (3182260739)',
+    ui.ButtonSet.YES_NO
+  );
+  
+  if (preguntarNotificacion === ui.Button.YES && resultados.credenciales.estado === '✅') {
+    try {
+      const credenciales = getCredenciales();
+      const fechaReporte = formatDate(getHoraColombia(), "dd/MM/yyyy HH:mm:ss");
+      
+      const params = {
+        "1": fechaReporte,
+        "2": "Sistema",
+        "3": "Zona de Prueba",
+        "4": "Cliente de Prueba",
+        "5": "🧪 PRUEBA DEL SISTEMA 🔹 Orden: TEST-001",
+        "6": "📄 TEST-001: ESTA ES UNA PRUEBA DEL SISTEMA",
+        "7": "3103149259"
+      };
+      
+      const response = UrlFetchApp.fetch(credenciales.API.url, {
+        method: "post",
+        contentType: "application/json",
+        headers: { "access-token": credenciales.API.token },
+        payload: JSON.stringify({
+          chatPlatform: "whatsapp",
+          chatChannelNumber: credenciales.API.channel,
+          platformContactId: "573182260739",
+          ruleNameOrId: "reporte_ordenes_retenidasv_0",
+          params,
+          clientPayload: `prueba_sistema_${Date.now()}`
+        }),
+        muteHttpExceptions: true
+      });
+      
+      const texto = response.getContentText();
+      const responseData = JSON.parse(texto);
+      
+      if (texto.includes("success") || (responseData.id && responseData.problems === null)) {
+        resultados.notificacion.estado = '✅';
+        resultados.notificacion.detalles = 'Notificación enviada exitosamente';
+        Logger.log('✅ Notificación de prueba enviada exitosamente');
+      } else {
+        resultados.notificacion.estado = '❌';
+        resultados.notificacion.detalles = `Error en respuesta: ${response.getResponseCode()}`;
+        Logger.log(`❌ Error en respuesta de API: ${texto}`);
+      }
+    } catch (e) {
+      resultados.notificacion.estado = '❌';
+      resultados.notificacion.detalles = `Error: ${e.message}`;
+      Logger.log(`❌ Error enviando notificación: ${e.message}`);
+    }
+  } else {
+    resultados.notificacion.estado = '⏭️';
+    resultados.notificacion.detalles = 'Prueba omitida por el usuario';
+  }
+  
+  // GENERAR REPORTE FINAL
+  Logger.log('\n--- GENERANDO REPORTE FINAL ---');
+  let reporte = '🧪 REPORTE DE PRUEBA DEL SISTEMA\n';
+  reporte += '=' .repeat(40) + '\n\n';
+  
+  const componentesOK = Object.values(resultados).filter(r => r.estado === '✅').length;
+  const componentesError = Object.values(resultados).filter(r => r.estado === '❌').length;
+  
+  reporte += `📊 RESUMEN: ${componentesOK} OK, ${componentesError} ERROR\n\n`;
+  
+  reporte += '1️⃣ CREDENCIALES: ' + resultados.credenciales.estado + '\n';
+  reporte += '   ' + resultados.credenciales.detalles + '\n\n';
+  
+  reporte += '2️⃣ BASE DE DATOS: ' + resultados.baseDatos.estado + '\n';
+  reporte += '   ' + resultados.baseDatos.detalles + '\n\n';
+  
+  reporte += '3️⃣ HOJAS SPREADSHEET: ' + resultados.hojas.estado + '\n';
+  reporte += '   ' + resultados.hojas.detalles + '\n\n';
+  
+  reporte += '4️⃣ CONTACTOS: ' + resultados.contactos.estado + '\n';
+  reporte += '   ' + resultados.contactos.detalles + '\n\n';
+  
+  reporte += '5️⃣ ÓRDENES RETENIDAS: ' + resultados.ordenesRetenidas.estado + '\n';
+  reporte += '   ' + resultados.ordenesRetenidas.detalles + '\n\n';
+  
+  reporte += '6️⃣ ÓRDENES LIBERADAS: ' + resultados.ordenesLiberadas.estado + '\n';
+  reporte += '   ' + resultados.ordenesLiberadas.detalles + '\n\n';
+  
+  reporte += '7️⃣ NOTIFICACIONES: ' + resultados.notificacion.estado + '\n';
+  reporte += '   ' + resultados.notificacion.detalles + '\n\n';
+  
+  reporte += '=' .repeat(40) + '\n';
+  
+  if (componentesError > 0) {
+    reporte += '\n⚠️ ACCIÓN REQUERIDA:\n';
+    if (resultados.credenciales.estado === '❌') {
+      reporte += '• Ejecuta "configurarCredencialesSeguras()" desde el menú\n';
+    }
+    if (resultados.contactos.estado === '❌') {
+      reporte += '• Verifica la hoja "ContactosZonas" y marca contactos como activos\n';
+    }
+  } else {
+    reporte += '\n✅ ¡SISTEMA FUNCIONANDO CORRECTAMENTE!';
+  }
+  
+  // Mostrar reporte
+  ui.alert('Resultado de la Prueba', reporte, ui.ButtonSet.OK);
+  
+  // Guardar reporte en logs
+  Logger.log('\n' + reporte);
+  Logger.log('===== FIN PRUEBA COMPLETA DEL SISTEMA =====');
+}
+
+// ================== MENÚ ==================
+
+function onOpen() {
+  Logger.log('===== INICIO onOpen() =====');
+  const ui = SpreadsheetApp.getUi();
+  
+  ui.createMenu('🔧 Sistema de Órdenes')
+    .addSubMenu(ui.createMenu('🔐 Seguridad')
+      .addItem('⚙️ Configurar Credenciales', 'configurarCredencialesSeguras')
+      .addItem('👁️ Ver Credenciales Guardadas', 'verPropiedadesGuardadas')
+      .addItem('✏️ Actualizar Credencial', 'actualizarCredencial')
+      .addItem('🗑️ Eliminar Credencial', 'eliminarCredencial'))
+    .addSeparator()
+    .addSubMenu(ui.createMenu('⚙️ Configurar Triggers')
+      .addItem('🚀 Configuración Completa Personalizada', 'configurarTriggerCompleto')
+      .addSeparator()
+      .addItem('🕐 Solo Verificación: Cada 5 min (24 horas)', 'configurarTriggersDiarios')
+      .addItem('🏢 Solo Verificación: Cada 5 min (horario laboral)', 'configurarTriggersHorarioLaboral')
+      .addItem('⏰ Solo Reporte Diario: Hora personalizada', 'configurarReporteDiarioPersonalizado')
+      .addSeparator()
+      .addItem('📅 Ver Triggers Activos', 'verTriggersActivos')
+      .addItem('🛑 Detener todos los triggers', 'detenerTriggers'))
+    .addItem('📊 Ver Estadísticas', 'verEstadisticas')
+    .addSubMenu(ui.createMenu('📱 Contactos')
+      .addItem('📋 Ver Resumen de Contactos', 'gestionarContactos')
+      .addItem('🔍 Verificar Contacto de Zona', 'verificarContactosZona'))
+    .addSeparator()
+    .addSubMenu(ui.createMenu('🧪 Pruebas de Notificaciones')
+      .addItem('🔬 PROBAR SISTEMA COMPLETO', 'probarSistemaCompleto')
+      .addSeparator()
+      .addItem('📋 Probar Retención (Orden Existente)', 'probarNotificacionOrdenRetenida')
+      .addItem('✏️ Probar Retención (Datos Personalizados)', 'probarNotificacionRetenidaPersonalizada')
+      .addSeparator()
+      .addItem('✅ Probar Liberación (Solo Retenidas)', 'probarLiberacionOrdenExistente')
+      .addItem('🔔 Probar Liberación (Cualquier Orden)', 'probarNotificacionOrdenLiberada'))
+    .addSeparator()
+    .addItem('🔄 Ejecutar Reporte Diario Ahora', 'reporteDiario')
+    .addItem('🔍 Verificar Cambios Ahora', 'verificarCambios')
+    .addToUi();
+    
+  Logger.log('Menú creado exitosamente');
+  Logger.log('===== FIN onOpen() =====');
+}
