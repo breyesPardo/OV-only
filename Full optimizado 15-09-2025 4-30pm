@@ -110,70 +110,24 @@ function procesarFecha(fechaString) {
   if (!fechaString) return "";
   fechaString = String(fechaString);
   
-  // Si ya está en formato DD/MM/YYYY, retornarlo
-  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(fechaString)) return fechaString;
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(fechaString)) return fechaString;
   
-  // Si está en formato YYYY-MM-DD (con o sin hora)
-  if (/^\d{4}-\d{2}-\d{2}/.test(fechaString)) {
+  if (fechaString.includes('T') || fechaString.includes('-')) {
     try {
-      const soloFecha = fechaString.split(/[T\s]/)[0];
-      const [año, mes, dia] = soloFecha.split('-');
+      const [año, mes, dia] = fechaString.split('T')[0].split('-');
       return `${dia.padStart(2, '0')}/${mes.padStart(2, '0')}/${año}`;
-    } catch (e) {}
-  }
-  
-  // Si es un objeto Date
-  if (fechaString instanceof Date || !isNaN(Date.parse(fechaString))) {
-    try {
-      const fecha = fechaString instanceof Date ? fechaString : new Date(fechaString);
-      return formatDate(fecha, "dd/MM/yyyy");
     } catch (e) {}
   }
   
   return fechaString;
 }
 
-// Función para corregir fechas existentes (puedes ejecutar esto manualmente)
-function corregirFechasOrdenesRetenidas() {
-  const hoja = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("OrdenesRetenidas");
-  if (!hoja || hoja.getLastRow() <= 1) return;
-  
-  const rango = hoja.getRange(2, 4, hoja.getLastRow() - 1, 1); // Columna D
-  const valores = rango.getValues();
-  
-  const valoresCorregidos = valores.map(([fecha]) => {
-    if (!fecha) return [""];
-    
-    let fechaStr = String(fecha);
-    
-    // Si contiene "undefined"
-    if (fechaStr.includes("undefined")) {
-      return [""];
-    }
-    
-    // Si está en formato YYYY-MM-DD
-    if (fechaStr.match(/^\d{4}-\d{2}-\d{2}/)) {
-      const partes = fechaStr.split(/[-T\s]/)[0].split('-');
-      if (partes.length === 3) {
-        return [`${partes[2]}/${partes[1]}/${partes[0]}`];
-      }
-    }
-    
-    // Si ya está bien formateado DD/MM/YYYY
-    if (fechaStr.match(/^\d{1,2}\/\d{1,2}\/\d{4}$/)) {
-      return [fechaStr];
-    }
-    
-    // Si es un objeto Date
-    if (fecha instanceof Date) {
-      return [formatDate(fecha, "dd/MM/yyyy")];
-    }
-    
-    return [fechaStr];
-  });
-  
-  rango.setValues(valoresCorregidos);
-  showAlert("✅ Fechas Corregidas", "Las fechas han sido corregidas exitosamente");
+function formatearNombreCorto(nombreCompleto) {
+  if (!nombreCompleto) return "Representante";
+  const partes = nombreCompleto.trim().split(/\s+/)
+    .slice(0, 2)
+    .filter(parte => !PREPOSICIONES.has(parte.toLowerCase()));
+  return partes.length > 0 ? partes.join(' ') : nombreCompleto.split(/\s+/).slice(0, 2).join(' ');
 }
 
 // ================== GESTIÓN DE CREDENCIALES ==================
@@ -424,8 +378,7 @@ function actualizarYEnviarOrdenesCredito(esReporteDiario = true) {
 // Funciones auxiliares para procesar órdenes
 function procesarOrdenesRetenidas(conn, sheets, ordenesRetenidasActuales) {
   const query = `
-    SELECT d.OrderHed_OrderNum, 
-           CONVERT(VARCHAR(10), d.OrderHed_OrderDate, 103) AS Fecha,
+    SELECT d.OrderHed_OrderNum, CONVERT(VARCHAR(10), d.OrderHed_OrderDate, 103) AS Fecha,
            d.Zona, d.Customer_Name, d.ObservacionesRetencionCredito
     FROM EpicorRepTran.dbo.udvPortalCustDtlOV d WITH (NOLOCK)
     WHERE d.CreditoRetenido = 1 AND d.OrderHed_VoidOrder = 0 
@@ -446,7 +399,7 @@ function procesarOrdenesRetenidas(conn, sheets, ordenesRetenidasActuales) {
     const datos = {
       zona: results.getString("Zona"),
       cliente: results.getString("Customer_Name"),
-      fecha: results.getString("Fecha") || "",
+      fecha: procesarFecha(results.getString("Fecha")),
       observacion: (results.getString("ObservacionesRetencionCredito") || "SIN OBSERVACIONES").toUpperCase()
     };
     
