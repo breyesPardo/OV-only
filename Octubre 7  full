@@ -81,6 +81,7 @@ function registrarError(tipo, error, detalles = '') {
 function verificarZonaHoraria() {
   const zonaActual = Session.getScriptTimeZone();
   if (zonaActual !== "America/Bogota") {
+    // Intentar establecer la zona horaria
     try {
       const ss = SpreadsheetApp.getActiveSpreadsheet();
       ss.setSpreadsheetTimeZone("America/Bogota");
@@ -222,6 +223,7 @@ function eliminarCredencial() {
 
 // ================== CONFIGURACIÓN INICIAL ==================
 function configuracionInicial() {
+  // Verificar zona horaria
   verificarZonaHoraria();
   
   const hojaContactos = getSheet(CONFIG.HOJAS.contactos.nombre, CONFIG.HOJAS.contactos.headers);
@@ -232,10 +234,12 @@ function configuracionInicial() {
     showAlert('✅ Configuración', 'Hoja de contactos creada con datos iniciales');
   }
   
+  // Crear hoja de errores si no existe
   getSheet(CONFIG.HOJAS.errores.nombre, CONFIG.HOJAS.errores.headers);
 }
 
 function cargarContactosZonas() {
+  // Usar cache si es reciente (5 minutos)
   if (CACHE.contactos && (Date.now() - CACHE.ultimaCarga) < 300000) {
     return CACHE.contactos;
   }
@@ -265,230 +269,15 @@ function cargarContactosZonas() {
   return CACHE.contactos;
 }
 
-// ================== LIMPIEZA AUTOMÁTICA DE DATOS ANTIGUOS ==================
-function limpiarDatosAntiguos() {
-  try {
-    const unMesAtras = new Date();
-    unMesAtras.setMonth(unMesAtras.getMonth() - 1);
-    unMesAtras.setHours(0, 0, 0, 0);
-    
-    let totalEliminados = 0;
-    
-    const hojaLogs = getSheet(CONFIG.HOJAS.logs.nombre, null, false);
-    if (hojaLogs && hojaLogs.getLastRow() > 1) {
-      const eliminadosLogs = limpiarHojaPorFecha(hojaLogs, 3, unMesAtras);
-      totalEliminados += eliminadosLogs;
-      Logger.log(`Eliminadas ${eliminadosLogs} filas antiguas de LogsLiberaciones`);
-    }
-    
-    const hojaControl = getSheet(CONFIG.HOJAS.control.nombre, null, false);
-    if (hojaControl && hojaControl.getLastRow() > 1) {
-      const eliminadosControl = limpiarHojaPorFecha(hojaControl, 3, unMesAtras);
-      totalEliminados += eliminadosControl;
-      Logger.log(`Eliminadas ${eliminadosControl} filas antiguas de ControlEnvios`);
-    }
-    
-    if (totalEliminados > 0) {
-      registrarError("Limpieza Automática", `Eliminadas ${totalEliminados} filas antiguas`, 
-        `Datos anteriores a ${formatDate(unMesAtras)}`);
-    }
-    
-    return totalEliminados;
-  } catch (e) {
-    registrarError("Limpieza Automática", "Error al limpiar datos antiguos", e.message);
-    Logger.log(`Error en limpiarDatosAntiguos: ${e.message}`);
-    return 0;
-  }
-}
-
-function limpiarHojaPorFecha(hoja, columnaFecha, fechaLimite) {
-  try {
-    const ultimaFila = hoja.getLastRow();
-    if (ultimaFila <= 1) return 0;
-    
-    const datos = hoja.getRange(2, 1, ultimaFila - 1, hoja.getLastColumn()).getValues();
-    const filasAEliminar = [];
-    
-    for (let i = datos.length - 1; i >= 0; i--) {
-      const valorFecha = datos[i][columnaFecha - 1];
-      
-      if (!valorFecha) continue;
-      
-      let fechaFila;
-      
-      if (valorFecha instanceof Date) {
-        fechaFila = valorFecha;
-      } else {
-        const fechaStr = String(valorFecha).trim();
-        
-        if (/^\d{2}\/\d{2}\/\d{4}/.test(fechaStr)) {
-          const [dia, mes, año] = fechaStr.split(/[\s\/]/)[0].split('/');
-          fechaFila = new Date(año, mes - 1, dia);
-        } else if (fechaStr.includes('-')) {
-          fechaFila = new Date(fechaStr);
-        } else {
-          continue;
-        }
-      }
-      
-      if (fechaFila instanceof Date && !isNaN(fechaFila) && fechaFila < fechaLimite) {
-        filasAEliminar.push(i + 2);
-      }
-    }
-    
-    if (filasAEliminar.length > 0) {
-      const gruposConsecutivos = [];
-      let grupoActual = [filasAEliminar[0]];
-      
-      for (let i = 1; i < filasAEliminar.length; i++) {
-        if (filasAEliminar[i] === filasAEliminar[i-1] - 1) {
-          grupoActual.push(filasAEliminar[i]);
-        } else {
-          gruposConsecutivos.push(grupoActual);
-          grupoActual = [filasAEliminar[i]];
-        }
-      }
-      gruposConsecutivos.push(grupoActual);
-      
-      gruposConsecutivos.reverse().forEach(grupo => {
-        const filaInicio = Math.min(...grupo);
-        const cantidad = grupo.length;
-        hoja.deleteRows(filaInicio, cantidad);
-      });
-      
-      Logger.log(`Hoja ${hoja.getName()}: Eliminadas ${filasAEliminar.length} filas antiguas`);
-    }
-    
-    return filasAEliminar.length;
-    
-  } catch (e) {
-    Logger.log(`Error en limpiarHojaPorFecha para ${hoja.getName()}: ${e.message}`);
-    registrarError("Limpieza Por Fecha", `Error en hoja ${hoja.getName()}`, e.message);
-    return 0;
-  }
-}
-
-function limpiarDatosAntiguosManual() {
-  const ui = SpreadsheetApp.getUi();
-  
-  const confirmacion = ui.alert('🗑️ Limpiar Datos Antiguos',
-    'Se eliminarán todos los datos de más de 1 mes en:\n' +
-    '• LogsLiberaciones\n' +
-    '• ControlEnvios\n\n' +
-    '¿Continuar?',
-    ui.ButtonSet.YES_NO);
-  
-  if (confirmacion !== ui.Button.YES) return;
-  
-  try {
-    const filasEliminadas = limpiarDatosAntiguos();
-    
-    if (filasEliminadas > 0) {
-      showAlert('✅ Limpieza Completada', 
-        `Se eliminaron ${filasEliminadas} filas con datos antiguos\n\n` +
-        'Se conservaron solo los datos del último mes');
-    } else {
-      showAlert('ℹ️ Sin Cambios', 
-        'No se encontraron datos antiguos para eliminar.\n' +
-        'Todos los datos son del último mes.');
-    }
-  } catch (e) {
-    showAlert('❌ Error', 'Error al limpiar datos: ' + e.message);
-  }
-}
-
-function verResumenDatos() {
-  try {
-    const unMesAtras = new Date();
-    unMesAtras.setMonth(unMesAtras.getMonth() - 1);
-    
-    let info = '📊 RESUMEN DE DATOS\n\n';
-    let antiguosTotales = 0;
-    
-    const hojaLogs = getSheet(CONFIG.HOJAS.logs.nombre, null, false);
-    if (hojaLogs && hojaLogs.getLastRow() > 1) {
-      const datos = hojaLogs.getDataRange().getValues().slice(1);
-      let antiguos = 0, recientes = 0;
-      
-      datos.forEach(fila => {
-        if (!fila[2]) return;
-        
-        const fechaStr = String(fila[2]).trim();
-        let fechaFila;
-        
-        if (fila[2] instanceof Date) {
-          fechaFila = fila[2];
-        } else if (/^\d{2}\/\d{2}\/\d{4}/.test(fechaStr)) {
-          const [dia, mes, año] = fechaStr.split(/[\s\/]/)[0].split('/');
-          fechaFila = new Date(año, mes - 1, dia);
-        }
-        
-        if (fechaFila && !isNaN(fechaFila)) {
-          if (fechaFila < unMesAtras) antiguos++;
-          else recientes++;
-        }
-      });
-      
-      info += `📋 LogsLiberaciones:\n`;
-      info += `   Total: ${datos.length} registros\n`;
-      info += `   Recientes (último mes): ${recientes}\n`;
-      info += `   Antiguos (>1 mes): ${antiguos}\n\n`;
-      antiguosTotales += antiguos;
-    }
-    
-    const hojaControl = getSheet(CONFIG.HOJAS.control.nombre, null, false);
-    if (hojaControl && hojaControl.getLastRow() > 1) {
-      const datos = hojaControl.getDataRange().getValues().slice(1);
-      let antiguos = 0, recientes = 0;
-      
-      datos.forEach(fila => {
-        if (!fila[2]) return;
-        
-        const fechaStr = String(fila[2]).trim();
-        let fechaFila;
-        
-        if (fila[2] instanceof Date) {
-          fechaFila = fila[2];
-        } else if (/^\d{2}\/\d{2}\/\d{4}/.test(fechaStr)) {
-          const [dia, mes, año] = fechaStr.split(/[\s\/]/)[0].split('/');
-          fechaFila = new Date(año, mes - 1, dia);
-        }
-        
-        if (fechaFila && !isNaN(fechaFila)) {
-          if (fechaFila < unMesAtras) antiguos++;
-          else recientes++;
-        }
-      });
-      
-      info += `📊 ControlEnvios:\n`;
-      info += `   Total: ${datos.length} registros\n`;
-      info += `   Recientes (último mes): ${recientes}\n`;
-      info += `   Antiguos (>1 mes): ${antiguos}\n\n`;
-      antiguosTotales += antiguos;
-    }
-    
-    info += `🗓️ Fecha límite: ${formatDate(unMesAtras)}\n\n`;
-    
-    if (antiguosTotales > 0) {
-      info += `⚠️ Hay ${antiguosTotales} registros antiguos que pueden limpiarse`;
-    } else {
-      info += `✅ Todos los datos están actualizados`;
-    }
-    
-    showAlert('📊 Resumen de Datos', info);
-    
-  } catch (e) {
-    showAlert('❌ Error', 'Error al generar resumen: ' + e.message);
-  }
-}
-
 // ================== GESTIÓN DE TRIGGERS ==================
 function configurarTriggers(tipo) {
   configuracionInicial();
   
+  // Eliminar triggers existentes
   ScriptApp.getProjectTriggers().forEach(trigger => ScriptApp.deleteTrigger(trigger));
   
   try {
+    // Crear trigger para reporte diario
     ScriptApp.newTrigger('reporteDiarioConManejo')
       .timeBased()
       .atHour(7)
@@ -496,184 +285,60 @@ function configurarTriggers(tipo) {
       .inTimezone("America/Bogota")
       .create();
     
-    registrarError("Configuración", "Triggers configurados exitosamente", `Tipo: ${tipo} - Solo reporte diario 7AM`);
+    // Crear trigger para verificación
+    const funcionVerificacion = tipo === 'laboral' ? 'verificarCambiosHorarioLaboral' : 'verificarCambios';
+    ScriptApp.newTrigger(funcionVerificacion)
+      .timeBased()
+      .everyMinutes(5)
+      .create();
+    
+    registrarError("Configuración", "Triggers configurados exitosamente", `Tipo: ${tipo}`);
     
     showAlert('✅ Sistema Configurado',
-      'Reporte diario configurado para las 7:00 AM\n\n' +
-      'NO SE CONFIGURÓ verificación cada 5 minutos.\n' +
-      'El sistema solo se ejecutará una vez al día.');
+      tipo === 'laboral'
+        ? 'Verificaciones solo en horario laboral (8 AM - 6 PM)'
+        : 'Verificaciones las 24 horas');
   } catch (e) {
     registrarError("Trigger", "Error al configurar triggers", e.message);
     showAlert('❌ Error', 'Error al configurar triggers: ' + e.message);
   }
 }
 
+// Funciones de trigger con manejo de errores
 function reporteDiarioConManejo() {
   try {
     Logger.log("Iniciando reporte diario a las " + new Date());
-    
-    const props = PropertiesService.getScriptProperties();
-    const ultimaEjecucion = props.getProperty('ULTIMA_EJECUCION_REPORTE');
-    const hoy = formatDate(new Date(), "yyyy-MM-dd");
-    
-    if (ultimaEjecucion === hoy) {
-      Logger.log("BLOQUEADO: Reporte ya ejecutado hoy");
-      registrarError("Reporte Diario", "Ejecución bloqueada - Ya se ejecutó hoy", formatDate(new Date(), "HH:mm:ss"));
-      return;
-    }
-    
     registrarError("Reporte Diario", "Inicio de ejecución", formatDate(new Date(), "HH:mm:ss"));
-    
-    // Limpieza automática
-    try {
-      const filasEliminadas = limpiarDatosAntiguos();
-      if (filasEliminadas > 0) {
-        Logger.log(`Limpieza automática completada: ${filasEliminadas} filas eliminadas`);
-      }
-    } catch (errorLimpieza) {
-      Logger.log(`Error en limpieza automática (no crítico): ${errorLimpieza.message}`);
-      registrarError("Limpieza Automática", "Error no crítico", errorLimpieza.message);
-    }
-    
-    // Ejecutar reporte principal
     actualizarYEnviarOrdenesCredito(true);
-    
-    // Guardar fecha de ejecución exitosa
-    props.setProperty('ULTIMA_EJECUCION_REPORTE', hoy);
-    
-    registrarError("Reporte Diario", "✅ Ejecución completada exitosamente", 
-      formatDate(new Date(), "HH:mm:ss"));
-      
-    Logger.log("✅ Reporte diario completado exitosamente");
-    
+    registrarError("Reporte Diario", "Ejecución completada", formatDate(new Date(), "HH:mm:ss"));
   } catch (e) {
-    const errorMsg = `${e.message}${e.stack ? '\n' + e.stack : ''}`;
-    Logger.log("❌ Error en reporte diario: " + errorMsg);
-    registrarError("Reporte Diario", "❌ Error en ejecución", errorMsg);
+    Logger.log("Error en reporte diario: " + e.message);
+    registrarError("Reporte Diario", "Error en ejecución", e.message);
     
-    // Intentar notificar el error de forma más detallada
+    // Intentar notificar el error
     try {
-      enviarNotificacionErrorDetallado(e);
+      const cred = getCredenciales();
+      if (cred.API.url && cred.API.token) {
+        enviarNotificacionError("Error en Reporte Diario 7AM", e.message);
+      }
     } catch (notifError) {
       Logger.log("Error al notificar: " + notifError.message);
     }
-    
-    // Re-lanzar el error para que quede registrado en los logs de Google
-    throw e;
-  }
-}
-
-function enviarNotificacionErrorDetallado(error) {
-  try {
-    const cred = getCredenciales();
-    if (!cred.API.url || !cred.API.token) {
-      Logger.log("No se pueden enviar notificaciones: credenciales API faltantes");
-      return;
-    }
-    
-    const horaError = formatDate(new Date(), "dd/MM/yyyy HH:mm:ss");
-    const errorSimplificado = String(error.message).substring(0, 200);
-    
-    // Determinar el tipo de error
-    let tipoError = "Error General";
-    if (error.message.includes("credencial")) tipoError = "Error de Credenciales";
-    else if (error.message.includes("conexión") || error.message.includes("connection")) tipoError = "Error de Conexión BD";
-    else if (error.message.includes("query") || error.message.includes("SQL")) tipoError = "Error en Consulta SQL";
-    else if (error.message.includes("API") || error.message.includes("fetch")) tipoError = "Error en API WhatsApp";
-    
-    const params = {
-      "1": horaError,
-      "2": "Sistema Automatizado",
-      "3": "⚠️ ERROR EN REPORTE DIARIO",
-      "4": "Administrador del Sistema",
-      "5": `❌ ${tipoError}`,
-      "6": `Error: ${errorSimplificado}. Por favor revise el log de errores en la hoja de cálculo.`,
-      "7": "3103149259"
-    };
-    
-    // Enviar a número de soporte/administrador
-    enviarNotificacionConReintentos(cred, "573182260739", false, params, "ERROR_SISTEMA", "notificacion_error");
-    
-    Logger.log("✅ Notificación de error enviada exitosamente");
-    
-  } catch (e) {
-    Logger.log(`Error enviando notificación de error: ${e.message}`);
-  }
-}
-
-function verificarCambiosSoloLiberaciones() {
-  try {
-    Logger.log("Verificando solo liberaciones nuevas...");
-    
-    const credenciales = getCredenciales();
-    if (!credenciales.DB.url || !credenciales.DB.user || !credenciales.DB.pass) {
-      return;
-    }
-    
-    let conn;
-    try {
-      conn = Jdbc.getConnection(credenciales.DB.url, credenciales.DB.user, credenciales.DB.pass);
-      
-      const sheets = {
-        logs: getSheet(CONFIG.HOJAS.logs.nombre, CONFIG.HOJAS.logs.headers),
-        control: getSheet(CONFIG.HOJAS.control.nombre, CONFIG.HOJAS.control.headers)
-      };
-      
-      const ordenesLiberadasActuales = new Map();
-      
-      procesarOrdenesLiberadas(conn, sheets, ordenesLiberadasActuales);
-      
-      const controlData = {};
-      if (sheets.control.getLastRow() > 1) {
-        const datos = sheets.control.getDataRange().getValues();
-        for (let i = 1; i < datos.length; i++) {
-          const [orden, estado, fechaEnvio, horaEnvio, tipoNotificacion, enviadoHoyRetenida, enviadoHoyLiberada, cliente, zona] = datos[i];
-          controlData[orden] = {
-            estado, fechaEnvio, horaEnvio, tipoNotificacion,
-            enviadoHoyRetenida, enviadoHoyLiberada,
-            cliente, zona, fila: i + 1
-          };
-        }
-      }
-      
-      const ordenesParaNotificar = [];
-      const hoy = formatDate(new Date());
-      
-      ordenesLiberadasActuales.forEach((datosLiberacion, orden) => {
-        const control = controlData[orden];
-        
-        if (control && control.estado === 'RETENIDA' && control.enviadoHoyLiberada === "NO") {
-          ordenesParaNotificar.push({
-            orden,
-            tipo: 'Orden liberada',
-            datos: datosLiberacion,
-            esLiberada: true
-          });
-        }
-      });
-      
-      if (ordenesParaNotificar.length > 0) {
-        Logger.log(`Encontradas ${ordenesParaNotificar.length} liberaciones nuevas`);
-        enviarNotificaciones(ordenesParaNotificar, sheets, controlData, hoy, formatDate(new Date(), "HH:mm:ss"));
-      }
-      
-    } finally {
-      if (conn) conn.close();
-    }
-    
-  } catch (e) {
-    registrarError("Verificar Liberaciones", "Error en ejecución", e.message);
   }
 }
 
 function verificarCambios() {
-  Logger.log("verificarCambios() llamado - función deprecada");
+  try {
+    actualizarYEnviarOrdenesCredito(false);
+  } catch (e) {
+    registrarError("Verificar Cambios", "Error en ejecución", e.message);
+  }
 }
 
 function verificarCambiosHorarioLaboral() {
   const hora = new Date().getHours();
   if (hora >= 8 && hora < 18) {
-    verificarCambiosSoloLiberaciones();
+    verificarCambios();
   }
 }
 
@@ -696,6 +361,7 @@ function enviarNotificacionError(tipo, mensaje) {
   }
 }
 
+// Funciones de trigger públicas
 const configurarTriggersDiarios = () => configurarTriggers('24horas');
 const configurarTriggersHorarioLaboral = () => configurarTriggers('laboral');
 const reporteDiario = () => reporteDiarioConManejo();
@@ -705,18 +371,26 @@ function configurarTriggerCompleto() {
   
   const opcionTiempo = ui.alert('⏰ Configuración de Tiempo',
     'Selecciona el tipo de configuración:\n\n' +
-    'YES = Configurar reporte diario (solo una vez al día)\n' +
+    'YES = Configurar reporte diario (hora o hora:minutos)\n' +
     'NO = Configurar para prueba única (se ejecutará en X minutos)',
     ui.ButtonSet.YES_NO_CANCEL);
   
   if (opcionTiempo === ui.Button.CANCEL) return;
   
+  const tipoVerificacion = ui.alert('🔄 Tipo de Verificación',
+    'YES = 24 horas\nNO = Solo horario laboral',
+    ui.ButtonSet.YES_NO_CANCEL);
+  
+  if (tipoVerificacion === ui.Button.CANCEL) return;
+  
   configuracionInicial();
   
   try {
+    // Eliminar triggers existentes
     ScriptApp.getProjectTriggers().forEach(trigger => ScriptApp.deleteTrigger(trigger));
     
     if (opcionTiempo === ui.Button.YES) {
+      // Configuración para reporte diario
       const tiempoReporte = ui.prompt('⏰ Hora del Reporte Diario',
         'Ingresa la hora en uno de estos formatos:\n' +
         '• Solo hora: 7 (para las 7:00 AM)\n' +
@@ -729,13 +403,16 @@ function configurarTriggerCompleto() {
         return;
       }
       
+      // Parsear hora y minutos
       let hora, minutos = 0;
       
       if (tiempoReporte.includes(':') || tiempoReporte.includes('-')) {
+        // Formato con separador
         const partes = tiempoReporte.split(/[:-]/).map(p => parseInt(p.trim()));
         hora = partes[0];
         minutos = partes[1] || 0;
       } else {
+        // Solo hora
         hora = parseInt(tiempoReporte);
       }
       
@@ -744,18 +421,19 @@ function configurarTriggerCompleto() {
         return;
       }
       
+      // Crear trigger diario a la hora específica
       const fechaBase = new Date();
       fechaBase.setHours(hora);
       fechaBase.setMinutes(minutos);
       fechaBase.setSeconds(0);
       
+      // Si la hora ya pasó hoy, configurar para mañana
       const ahora = new Date();
       if (fechaBase <= ahora) {
         fechaBase.setDate(fechaBase.getDate() + 1);
       }
       
-      PropertiesService.getScriptProperties().deleteProperty('ULTIMA_EJECUCION_REPORTE');
-      
+      // Crear el trigger recurrente
       ScriptApp.newTrigger('reporteDiarioConManejo')
         .timeBased()
         .atHour(hora)
@@ -770,11 +448,10 @@ function configurarTriggerCompleto() {
         `Sistema configurado correctamente\n\n` +
         `📅 Reporte diario: ${horaFormateada} (America/Bogota)\n` +
         `🔄 Primera ejecución: ${formatDate(fechaBase, "dd/MM/yyyy HH:mm")}\n\n` +
-        `⚠️ IMPORTANTE: El sistema se ejecutará SOLO UNA VEZ AL DÍA\n` +
-        `No hay verificaciones cada 5 minutos.\n\n` +
         `Nota: Los triggers pueden ejecutarse hasta 15 minutos antes o después de la hora configurada`);
         
     } else {
+      // Configuración para prueba única
       const minutos = parseInt(ui.prompt('🧪 Configuración de Prueba',
         'Ingresa en cuántos minutos ejecutar el reporte (1-59):', 
         ui.ButtonSet.OK_CANCEL).getResponseText());
@@ -784,8 +461,7 @@ function configurarTriggerCompleto() {
         return;
       }
       
-      PropertiesService.getScriptProperties().deleteProperty('ULTIMA_EJECUCION_REPORTE');
-      
+      // Crear trigger temporal para pruebas
       const ahora = new Date();
       ahora.setMinutes(ahora.getMinutes() + minutos);
       
@@ -800,8 +476,15 @@ function configurarTriggerCompleto() {
         `NOTA: Este es un trigger único para prueba`);
     }
     
-    registrarError("Configuración", "Trigger diario configurado exitosamente", 
-      opcionTiempo === ui.Button.YES ? "Reporte diario - UNA VEZ AL DÍA" : "Prueba única");
+    // Configurar verificación periódica
+    const funcionVerificacion = tipoVerificacion === ui.Button.YES ? 'verificarCambios' : 'verificarCambiosHorarioLaboral';
+    ScriptApp.newTrigger(funcionVerificacion)
+      .timeBased()
+      .everyMinutes(5)
+      .create();
+    
+    registrarError("Configuración", "Triggers configurados exitosamente", 
+      opcionTiempo === ui.Button.YES ? "Reporte diario" : "Prueba única");
     
   } catch (e) {
     registrarError("Configuración Trigger", "Error", e.message);
@@ -815,21 +498,11 @@ function verTriggersActivos() {
   const horaActual = formatDate(new Date(), "HH:mm:ss");
   const zonaHorariaSpreadsheet = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
   
-  const props = PropertiesService.getScriptProperties();
-  const ultimaEjecucion = props.getProperty('ULTIMA_EJECUCION_REPORTE');
-  
   let info = `🌎 INFORMACIÓN DE ZONA HORARIA:\n`;
   info += `Zona del Script: ${zona}\n`;
   info += `Zona de la Hoja: ${zonaHorariaSpreadsheet}\n`;
   info += `Hora actual: ${horaActual}\n`;
-  
-  if (ultimaEjecucion) {
-    info += `\n🔒 CONTROL DE DUPLICADOS:\n`;
-    info += `Última ejecución: ${ultimaEjecucion}\n`;
-    info += `Estado: ${ultimaEjecucion === formatDate(new Date(), "yyyy-MM-dd") ? '✅ Ya ejecutado hoy' : '⏳ Puede ejecutarse'}\n`;
-  }
-  
-  info += `\n📅 TRIGGERS CONFIGURADOS (${triggers.length}):\n`;
+  info += `\n📅 TRIGGERS CONFIGURADOS:\n`;
   
   if (triggers.length === 0) {
     info += 'No hay triggers configurados';
@@ -838,71 +511,42 @@ function verTriggersActivos() {
       const handler = t.getHandlerFunction();
       let details = '';
       
+      // Intentar obtener más información del trigger
       try {
         const type = t.getEventType();
         if (type === ScriptApp.EventType.CLOCK) {
           details = ' (Trigger de tiempo)';
+          // Si es el trigger del reporte diario, indicarlo
           if (handler === 'reporteDiarioConManejo') {
-            details += ' - ⏰ REPORTE DIARIO';
-          } else if (handler.includes('verificar')) {
-            details += ' - ⚠️ VERIFICACIÓN (revisar si es necesaria)';
+            details += ' - REPORTE DIARIO';
           }
         }
       } catch (e) {}
       
       info += `${i + 1}. ${handler}${details}\n`;
     });
-    
-    if (triggers.length > 2) {
-      info += `\n⚠️ ADVERTENCIA: Hay ${triggers.length} triggers activos.\n`;
-      info += `Lo normal es tener solo 1 trigger (reporte diario).\n`;
-      info += `Considera detener y reconfigurar.`;
-    }
   }
   
+  // Agregar información de la última ejecución si existe
   const hojaErrores = getSheet(CONFIG.HOJAS.errores.nombre, null, false);
   if (hojaErrores && hojaErrores.getLastRow() > 1) {
     const datos = hojaErrores.getDataRange().getValues();
     for (let i = datos.length - 1; i >= 1 && i >= datos.length - 10; i--) {
-      if (datos[i][2] === 'Reporte Diario') {
-        const accion = datos[i][3];
-        if (accion.includes('Completado') || accion.includes('Inicio')) {
-          info += `\n✅ Última ejecución del reporte:\n${datos[i][0]} ${datos[i][1]} - ${accion}`;
-          break;
-        }
+      if (datos[i][2] === 'Reporte Diario' && datos[i][3].includes('Completado')) {
+        info += `\n✅ Última ejecución exitosa del reporte:\n${datos[i][0]} ${datos[i][1]}`;
+        break;
       }
     }
   }
   
-  showAlert('📅 Triggers y Estado del Sistema', info);
+  showAlert('📅 Triggers y Zona Horaria', info);
 }
 
 function detenerTriggers() {
   const triggers = ScriptApp.getProjectTriggers();
   triggers.forEach(trigger => ScriptApp.deleteTrigger(trigger));
-  
-  PropertiesService.getScriptProperties().deleteProperty('ULTIMA_EJECUCION_REPORTE');
-  
   registrarError("Sistema", "Triggers detenidos manualmente", `Total: ${triggers.length}`);
-  showAlert('🛑 Triggers Detenidos', 
-    `Se eliminaron ${triggers.length} triggers\n\n` +
-    `✅ También se limpió el control de ejecución diaria`);
-}
-
-function limpiarControlEjecucion() {
-  const ui = SpreadsheetApp.getUi();
-  
-  if (ui.alert('🔄 Limpiar Control de Ejecución',
-    'Esto permitirá que el reporte se ejecute nuevamente hoy.\n' +
-    '¿Estás seguro?',
-    ui.ButtonSet.YES_NO) === ui.Button.YES) {
-    
-    PropertiesService.getScriptProperties().deleteProperty('ULTIMA_EJECUCION_REPORTE');
-    registrarError("Sistema", "Control de ejecución limpiado manualmente");
-    showAlert('✅ Control Limpiado', 
-      'El sistema ahora puede ejecutar el reporte nuevamente hoy.\n\n' +
-      'Útil para pruebas.');
-  }
+  showAlert('🛑 Triggers Detenidos', `Se eliminaron ${triggers.length} triggers`);
 }
 
 // ================== FUNCIÓN PRINCIPAL ==================
@@ -911,23 +555,17 @@ function actualizarYEnviarOrdenesCredito(esReporteDiario = true) {
   Logger.log(`Iniciando actualización - Reporte diario: ${esReporteDiario}`);
   
   try {
-    // 1. Verificar credenciales
-    Logger.log("Paso 1: Verificando credenciales...");
     const credenciales = getCredenciales();
     
+    // Verificar credenciales
     if (!credenciales.DB.url || !credenciales.DB.user || !credenciales.DB.pass) {
-      const error = '❌ Faltan credenciales de base de datos (DB_URL, DB_USER o DB_PASS)';
-      Logger.log(error);
+      const error = 'Faltan credenciales de base de datos';
       registrarError("Credenciales", error);
-      throw new Error(error);
+      showAlert('❌ Error', error);
+      return;
     }
     
-    if (!credenciales.API.url || !credenciales.API.token || !credenciales.API.channel) {
-      Logger.log("⚠️ Advertencia: Faltan credenciales de API - No se podrán enviar notificaciones");
-    }
-    
-    // 2. Obtener hojas
-    Logger.log("Paso 2: Obteniendo hojas de cálculo...");
+    // Obtener hojas
     const sheets = {};
     Object.entries(CONFIG.HOJAS).forEach(([key, config]) => {
       if (key !== 'contactos' && key !== 'errores') {
@@ -935,17 +573,15 @@ function actualizarYEnviarOrdenesCredito(esReporteDiario = true) {
       }
     });
     
-    // 3. Limpiar hoja de órdenes
-    Logger.log("Paso 3: Limpiando hoja de órdenes retenidas...");
+    // Limpiar hoja de órdenes
     sheets.ordenes.clear();
     sheets.ordenes.getRange(1, 1, 1, CONFIG.HOJAS.ordenes.headers.length)
       .setValues([CONFIG.HOJAS.ordenes.headers]);
     
-    // 4. Cargar datos de control
-    Logger.log("Paso 4: Cargando datos de control...");
     const controlData = {};
     const hoy = formatDate(new Date());
     
+    // Cargar datos de control existentes
     if (sheets.control.getLastRow() > 1) {
       const datos = sheets.control.getDataRange().getValues();
       
@@ -960,77 +596,54 @@ function actualizarYEnviarOrdenesCredito(esReporteDiario = true) {
       }
     }
     
-    Logger.log(`Control cargado: ${Object.keys(controlData).length} órdenes en seguimiento`);
-    
     let conn;
     try {
-      // 5. Conectar a base de datos
-      Logger.log("Paso 5: Conectando a base de datos...");
       conn = Jdbc.getConnection(credenciales.DB.url, credenciales.DB.user, credenciales.DB.pass);
-      Logger.log("✅ Conexión exitosa a base de datos");
-      
       const ordenesRetenidasActuales = new Map();
       const ordenesLiberadasActuales = new Map();
       
-      // 6. Procesar órdenes retenidas
-      Logger.log("Paso 6: Procesando órdenes retenidas...");
+      // Procesar órdenes retenidas
       procesarOrdenesRetenidas(conn, sheets, ordenesRetenidasActuales);
-      Logger.log(`✅ Órdenes retenidas procesadas: ${ordenesRetenidasActuales.size}`);
       
-      // 7. Procesar órdenes liberadas
-      Logger.log("Paso 7: Procesando órdenes liberadas...");
+      // Procesar órdenes liberadas
       procesarOrdenesLiberadas(conn, sheets, ordenesLiberadasActuales);
-      Logger.log(`✅ Órdenes liberadas procesadas: ${ordenesLiberadasActuales.size}`);
       
-      // 8. Preparar órdenes para envío
-      Logger.log("Paso 8: Preparando órdenes para notificación...");
+      // Preparar órdenes para envío
       const ordenesParaEnviar = prepararOrdenesParaEnvio(
         ordenesRetenidasActuales,
         ordenesLiberadasActuales,
         controlData,
         esReporteDiario
       );
-      Logger.log(`✅ Órdenes a notificar: ${ordenesParaEnviar.length}`);
       
-      // 9. Enviar notificaciones
-      if (ordenesParaEnviar.length > 0) {
-        Logger.log("Paso 9: Enviando notificaciones...");
-        enviarNotificaciones(ordenesParaEnviar, sheets, controlData, hoy, formatDate(new Date(), "HH:mm:ss"));
-        Logger.log("✅ Notificaciones enviadas");
-      } else {
-        Logger.log("ℹ️ No hay órdenes para notificar");
-      }
+      // Enviar notificaciones
+      enviarNotificaciones(ordenesParaEnviar, sheets, controlData, hoy, formatDate(new Date(), "HH:mm:ss"));
       
+      // Registrar ejecución exitosa
       const duracion = (new Date() - inicioEjecucion) / 1000;
-      Logger.log(`✅ Ejecución completada en ${duracion} segundos`);
+      Logger.log(`Ejecución completada en ${duracion} segundos`);
       
       if (esReporteDiario) {
-        registrarError("Reporte Diario", "✅ Procesamiento completado", 
-          `Órdenes: ${ordenesParaEnviar.length}, Duración: ${duracion.toFixed(2)}s`);
+        registrarError("Reporte Diario", "Completado exitosamente", 
+          `Órdenes procesadas: ${ordenesParaEnviar.length}, Duración: ${duracion}s`);
       }
       
     } catch (e) {
-      Logger.log(`❌ ERROR en procesamiento de base de datos: ${e.message}`);
-      registrarError("Procesamiento BD", e.message, e.stack || '');
-      throw new Error(`Error en base de datos: ${e.message}`);
+      Logger.log(`ERROR en procesamiento: ${e.message}`);
+      registrarError("Procesamiento", e.message, e.stack);
+      throw e;
     } finally {
-      if (conn) {
-        try {
-          conn.close();
-          Logger.log("Conexión a BD cerrada");
-        } catch (e) {
-          Logger.log(`Error al cerrar conexión: ${e.message}`);
-        }
-      }
+      if (conn) conn.close();
     }
     
   } catch (e) {
-    Logger.log(`❌ ERROR GENERAL: ${e.message}`);
-    registrarError("Sistema", "Error general en actualizarYEnviarOrdenesCredito", e.message + (e.stack ? '\n' + e.stack : ''));
+    Logger.log(`ERROR GENERAL: ${e.message}`);
+    registrarError("Sistema", "Error general en actualizarYEnviarOrdenesCredito", e.message);
     throw e;
   }
 }
 
+// Funciones auxiliares para procesar órdenes (sin cambios)
 function procesarOrdenesRetenidas(conn, sheets, ordenesRetenidasActuales) {
   const query = `
     SELECT d.OrderHed_OrderNum, CONVERT(VARCHAR(10), d.OrderHed_OrderDate, 103) AS Fecha,
@@ -1137,6 +750,7 @@ function procesarOrdenesLiberadas(conn, sheets, ordenesLiberadasActuales) {
 function prepararOrdenesParaEnvio(ordenesRetenidasActuales, ordenesLiberadasActuales, controlData, esReporteDiario) {
   const ordenesParaEnviar = [];
   
+  // Procesar órdenes retenidas
   ordenesRetenidasActuales.forEach((datos, orden) => {
     const control = controlData[orden];
     let debeEnviar = false;
@@ -1158,6 +772,7 @@ function prepararOrdenesParaEnvio(ordenesRetenidasActuales, ordenesLiberadasActu
     }
   });
   
+  // Procesar órdenes liberadas
   ordenesLiberadasActuales.forEach((datosLiberacion, orden) => {
     const control = controlData[orden];
     
@@ -1171,6 +786,7 @@ function prepararOrdenesParaEnvio(ordenesRetenidasActuales, ordenesLiberadasActu
     }
   });
   
+  // Actualizar control para órdenes liberadas nuevas
   ordenesLiberadasActuales.forEach((datosLiberacion, orden) => {
     if (!controlData[orden]) {
       controlData[orden] = {
@@ -1202,6 +818,7 @@ function enviarNotificaciones(ordenesParaEnviar, sheets, controlData, fechaHoy, 
     return;
   }
   
+  // Verificar configuración de copias
   const props = PropertiesService.getScriptProperties();
   const copiaActiva = props.getProperty('COPIA_ACTIVA') === 'SI';
   const numeroCopia = props.getProperty('NUMERO_COPIA');
@@ -1216,6 +833,7 @@ function enviarNotificaciones(ordenesParaEnviar, sheets, controlData, fechaHoy, 
   const fechaReporte = formatDate(new Date(), "dd/MM/yyyy HH:mm:ss");
   const actualizacionesControl = [];
   
+  // Procesar máximo 200 órdenes
   const ordenesAProcesar = ordenesParaEnviar.slice(0, 200);
   
   ordenesAProcesar.forEach(({ orden, tipo, datos, esLiberada }) => {
@@ -1247,6 +865,7 @@ function enviarNotificaciones(ordenesParaEnviar, sheets, controlData, fechaHoy, 
       "7": "3103149259"
     };
     
+    // Enviar notificación principal
     const enviado = enviarNotificacionConReintentos(
       credenciales, telefono, esLiberada, params, orden, tipo
     );
@@ -1267,6 +886,7 @@ function enviarNotificaciones(ordenesParaEnviar, sheets, controlData, fechaHoy, 
         fila: controlExistente?.fila
       });
       
+      // Enviar copia si está configurada
       if (copiaActiva && numeroCopia) {
         const debeEnviarCopia = !zonasPermitidasCopia || zonasPermitidasCopia.has(datos.zona);
         if (debeEnviarCopia) {
@@ -1280,8 +900,10 @@ function enviarNotificaciones(ordenesParaEnviar, sheets, controlData, fechaHoy, 
     Utilities.sleep(1000);
   });
   
+  // Actualizar control
   actualizarControlEnBatch(sheets.control, actualizacionesControl);
   
+  // Aplicar formato condicional
   aplicarFormatoCondicional(sheets.control);
 }
 
@@ -1343,10 +965,12 @@ function actualizarControlEnBatch(hojaControl, actualizaciones) {
     }
   });
   
+  // Actualizar filas existentes
   actualizacionesExistentes.forEach(({ fila, valores }) => {
     hojaControl.getRange(fila, 1, 1, 9).setValues([valores]);
   });
   
+  // Agregar nuevas filas
   if (nuevasFilas.length > 0) {
     const ultimaFila = hojaControl.getLastRow();
     hojaControl.getRange(ultimaFila + 1, 1, nuevasFilas.length, 9).setValues(nuevasFilas);
@@ -1399,6 +1023,7 @@ function configurarCopiasReportes() {
     return;
   }
   
+  // Configurar nuevas copias
   const numero = ui.prompt('📱 Número de WhatsApp',
     'Ingresa el número (ej: 3182260739):',
     ui.ButtonSet.OK_CANCEL).getResponseText().trim().replace(/\D/g, '');
@@ -1554,12 +1179,12 @@ function configurarPruebaRapida() {
   }
   
   try {
+    // Eliminar triggers de reporte existentes
     ScriptApp.getProjectTriggers()
       .filter(t => t.getHandlerFunction() === 'reporteDiarioConManejo')
       .forEach(t => ScriptApp.deleteTrigger(t));
     
-    PropertiesService.getScriptProperties().deleteProperty('ULTIMA_EJECUCION_REPORTE');
-    
+    // Crear trigger temporal
     const ahora = new Date();
     const ejecucion = new Date(ahora.getTime() + (minutos * 60000));
     
@@ -1568,6 +1193,7 @@ function configurarPruebaRapida() {
       .at(ejecucion)
       .create();
     
+    // Registrar la prueba
     registrarError("Prueba Rápida", "Trigger configurado", 
       `Ejecutará en ${minutos} minutos a las ${formatDate(ejecucion, "HH:mm:ss")}`);
     
@@ -1576,8 +1202,6 @@ function configurarPruebaRapida() {
       `⏰ Hora actual: ${formatDate(ahora, "HH:mm:ss")}\n` +
       `📍 Ejecutará a las: ${formatDate(ejecucion, "HH:mm:ss")}\n` +
       `🌎 Zona horaria: ${Session.getScriptTimeZone()}\n\n` +
-      `⚠️ IMPORTANTE: Este es un trigger ÚNICO para prueba.\n` +
-      `Después de ejecutarse, deberás reconfigurar el reporte diario.\n\n` +
       `💡 TIP: Ve a "Ver Log de Errores" después para confirmar`);
       
   } catch (e) {
@@ -1591,15 +1215,18 @@ function verificarHorarioActual() {
   const zona = Session.getScriptTimeZone();
   const zonaHoja = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
   
+  // Obtener hora en diferentes formatos
   const horaLocal = formatDate(ahora, "HH:mm:ss");
   const fechaCompleta = formatDate(ahora, "dd/MM/yyyy HH:mm:ss");
   
+  // Verificar si hay diferencia entre zonas
   let advertencia = '';
   if (zona !== zonaHoja) {
     advertencia = '\n\n⚠️ ADVERTENCIA: La zona del script y la hoja son diferentes.\n' +
                   'Esto puede causar problemas con los triggers.';
   }
   
+  // Verificar último reporte
   let ultimoReporte = '\n📊 Último reporte: No encontrado';
   const hojaErrores = getSheet(CONFIG.HOJAS.errores.nombre, null, false);
   if (hojaErrores && hojaErrores.getLastRow() > 1) {
@@ -1639,6 +1266,7 @@ function probarSistemaCompleto() {
     zonaHoraria: '⏳'
   };
   
+  // 0. Verificar zona horaria
   try {
     const zona = Session.getScriptTimeZone();
     resultados.zonaHoraria = zona === 'America/Bogota' ? '✅' : `⚠️ ${zona}`;
@@ -1646,6 +1274,7 @@ function probarSistemaCompleto() {
     resultados.zonaHoraria = '❌';
   }
   
+  // 1. Verificar credenciales
   try {
     const cred = getCredenciales();
     resultados.credenciales = (!cred.DB.url || !cred.DB.user || !cred.DB.pass || 
@@ -1654,6 +1283,7 @@ function probarSistemaCompleto() {
     resultados.credenciales = '❌';
   }
   
+  // 2. Verificar conexión BD
   if (resultados.credenciales === '✅') {
     try {
       const cred = getCredenciales();
@@ -1668,6 +1298,7 @@ function probarSistemaCompleto() {
     }
   }
   
+  // 3. Verificar hojas
   try {
     Object.values(CONFIG.HOJAS).forEach(config => getSheet(config.nombre, config.headers));
     resultados.hojas = '✅';
@@ -1675,6 +1306,7 @@ function probarSistemaCompleto() {
     resultados.hojas = '❌';
   }
   
+  // 4. Verificar contactos
   try {
     const contactos = cargarContactosZonas();
     resultados.contactos = Object.keys(contactos.zonaANumero).length > 0 ? '✅' : '❌';
@@ -1682,8 +1314,10 @@ function probarSistemaCompleto() {
     resultados.contactos = '❌';
   }
   
+  // 5. Verificar queries
   resultados.queries = resultados.baseDatos === '✅' ? '✅' : '⚠️';
   
+  // 6. Prueba de notificación
   if (ui.alert('Prueba de Notificación', 
     '¿Enviar notificación de prueba?', 
     ui.ButtonSet.YES_NO) === ui.Button.YES && resultados.credenciales === '✅') {
@@ -1710,6 +1344,7 @@ function probarSistemaCompleto() {
     resultados.notificacion = '⏭️';
   }
   
+  // Generar reporte
   const ok = Object.values(resultados).filter(r => r === '✅').length;
   const error = Object.values(resultados).filter(r => r === '❌').length;
   const advertencia = Object.values(resultados).filter(r => r.includes('⚠️')).length;
@@ -1739,6 +1374,7 @@ function ejecutarPrueba(nombrePrueba, esLiberada = false) {
     return;
   }
   
+  // Buscar orden en las hojas
   const nombreHoja = esLiberada ? CONFIG.HOJAS.logs.nombre : CONFIG.HOJAS.ordenes.nombre;
   const hoja = getSheet(nombreHoja, null, false);
   
@@ -1786,6 +1422,7 @@ function ejecutarPrueba(nombrePrueba, esLiberada = false) {
   showAlert('✅ Prueba Enviada', `Se envió la notificación para la orden ${ordenNum}`);
 }
 
+// Funciones de prueba específicas
 const probarNotificacionOrdenRetenida = () => ejecutarPrueba('Orden Retenida', false);
 const probarNotificacionOrdenLiberada = () => ejecutarPrueba('Orden Liberada', true);
 
@@ -1809,113 +1446,7 @@ function probarNotificacionRetenidaPersonalizada() {
   showAlert('✅ Prueba Personalizada', 'Notificación de prueba enviada');
 }
 
-function verificarConexionBD() {
-  const ui = SpreadsheetApp.getUi();
-  
-  try {
-    ui.alert('🔍 Verificando Conexión', 
-      'Probando conexión a la base de datos...\nEsto puede tomar unos segundos.', 
-      ui.ButtonSet.OK);
-    
-    const cred = getCredenciales();
-    
-    if (!cred.DB.url || !cred.DB.user || !cred.DB.pass) {
-      showAlert('❌ Error de Credenciales', 
-        'Faltan credenciales de base de datos:\n\n' +
-        `DB_URL: ${cred.DB.url ? '✅ Configurada' : '❌ Falta'}\n` +
-        `DB_USER: ${cred.DB.user ? '✅ Configurado' : '❌ Falta'}\n` +
-        `DB_PASS: ${cred.DB.pass ? '✅ Configurada' : '❌ Falta'}\n\n` +
-        'Configúralas desde el menú Seguridad > Actualizar Credencial');
-      return;
-    }
-    
-    Logger.log("Intentando conectar a: " + cred.DB.url);
-    
-    const conn = Jdbc.getConnection(cred.DB.url, cred.DB.user, cred.DB.pass);
-    Logger.log("✅ Conexión establecida");
-    
-    const stmt = conn.createStatement();
-    const result = stmt.executeQuery("SELECT GETDATE() as FechaHora, @@VERSION as Version");
-    
-    let info = '';
-    if (result.next()) {
-      info = `Fecha/Hora del servidor: ${result.getString("FechaHora")}\n\n`;
-      info += `Versión SQL Server:\n${result.getString("Version").substring(0, 100)}...`;
-    }
-    
-    stmt.close();
-    conn.close();
-    
-    Logger.log("✅ Conexión cerrada exitosamente");
-    
-    showAlert('✅ Conexión Exitosa', 
-      'La conexión a la base de datos funciona correctamente.\n\n' + info);
-    
-    registrarError("Diagnóstico", "✅ Verificación de conexión BD exitosa");
-    
-  } catch (e) {
-    Logger.log(`❌ Error en conexión: ${e.message}`);
-    registrarError("Diagnóstico", "❌ Error en verificación de conexión BD", e.message);
-    
-    let mensajeError = '❌ Error al conectar a la base de datos:\n\n';
-    mensajeError += e.message + '\n\n';
-    
-    if (e.message.includes('timeout')) {
-      mensajeError += '💡 Sugerencia: Verifica que la IP de Google Apps Script\n' +
-                      'esté autorizada en el firewall de la base de datos.';
-    } else if (e.message.includes('login failed') || e.message.includes('authentication')) {
-      mensajeError += '💡 Sugerencia: Verifica el usuario y contraseña\n' +
-                      'en las credenciales (DB_USER y DB_PASS).';
-    } else if (e.message.includes('host')) {
-      mensajeError += '💡 Sugerencia: Verifica la URL de conexión (DB_URL).\n' +
-                      'Debe incluir servidor, puerto y base de datos.';
-    }
-    
-    showAlert('❌ Error de Conexión', mensajeError);
-  }
-}
-
-function verificarCredencialesCompletas() {
-  const cred = getCredenciales();
-  
-  const estado = {
-    db: {
-      url: !!cred.DB.url,
-      user: !!cred.DB.user,
-      pass: !!cred.DB.pass
-    },
-    api: {
-      url: !!cred.API.url,
-      token: !!cred.API.token,
-      channel: !!cred.API.channel
-    }
-  };
-  
-  const dbCompleta = estado.db.url && estado.db.user && estado.db.pass;
-  const apiCompleta = estado.api.url && estado.api.token && estado.api.channel;
-  
-  let mensaje = '📋 ESTADO DE CREDENCIALES\n\n';
-  mensaje += '🗄️ BASE DE DATOS:\n';
-  mensaje += `   DB_URL: ${estado.db.url ? '✅' : '❌'}\n`;
-  mensaje += `   DB_USER: ${estado.db.user ? '✅' : '❌'}\n`;
-  mensaje += `   DB_PASS: ${estado.db.pass ? '✅' : '❌'}\n`;
-  mensaje += `   Estado: ${dbCompleta ? '✅ Completa' : '❌ Incompleta'}\n\n`;
-  
-  mensaje += '📱 API WHATSAPP:\n';
-  mensaje += `   API_URL: ${estado.api.url ? '✅' : '❌'}\n`;
-  mensaje += `   API_TOKEN: ${estado.api.token ? '✅' : '❌'}\n`;
-  mensaje += `   API_CHANNEL: ${estado.api.channel ? '✅' : '❌'}\n`;
-  mensaje += `   Estado: ${apiCompleta ? '✅ Completa' : '❌ Incompleta'}\n\n`;
-  
-  if (dbCompleta && apiCompleta) {
-    mensaje += '✅ Todas las credenciales están configuradas correctamente';
-  } else {
-    mensaje += '⚠️ Faltan credenciales. Configúralas desde:\n';
-    mensaje += 'Menú > Seguridad > Actualizar Credencial';
-  }
-  
-  showAlert('🔐 Verificación de Credenciales', mensaje);
-}
+// ================== UTILIDADES DE DIAGNÓSTICO ==================
 function verLogErrores() {
   const hojaErrores = getSheet(CONFIG.HOJAS.errores.nombre, null, false);
   if (!hojaErrores || hojaErrores.getLastRow() <= 1) {
@@ -1956,38 +1487,32 @@ function onOpen() {
     .createMenu('🔧 Sistema de Órdenes')
     .addSubMenu(SpreadsheetApp.getUi().createMenu('🔐 Seguridad')
       .addItem('👁️ Ver Credenciales Guardadas', 'verPropiedadesGuardadas')
-      .addItem('🔍 Verificar Credenciales Completas', 'verificarCredencialesCompletas')
-      .addSeparator()
       .addItem('✏️ Actualizar Credencial', 'actualizarCredencial')
       .addItem('🗑️ Eliminar Credencial', 'eliminarCredencial'))
     .addSeparator()
     .addSubMenu(SpreadsheetApp.getUi().createMenu('⚙️ Configurar Triggers')
-      .addItem('🚀 Configuración Completa (RECOMENDADO)', 'configurarTriggerCompleto')
+      .addItem('🚀 Configuración Completa', 'configurarTriggerCompleto')
       .addItem('⚡ Prueba Rápida (minutos)', 'configurarPruebaRapida')
-      .addSeparator()
+      .addItem('🕐 Solo 24 horas', 'configurarTriggersDiarios')
+      .addItem('🏢 Solo Horario Laboral', 'configurarTriggersHorarioLaboral')
       .addItem('📅 Ver Triggers Activos', 'verTriggersActivos')
-      .addItem('🛑 Detener Todos los Triggers', 'detenerTriggers')
-      .addItem('🔄 Limpiar Control de Ejecución', 'limpiarControlEjecucion'))
+      .addItem('🛑 Detener Triggers', 'detenerTriggers'))
     .addItem('📊 Ver Estadísticas', 'verEstadisticas')
     .addSubMenu(SpreadsheetApp.getUi().createMenu('📨 Copias de Reportes')
       .addItem('⚙️ Configurar/Desactivar', 'configurarCopiasReportes')
       .addItem('👁️ Ver Configuración', 'verConfiguracionCopias'))
-    .addSubMenu(SpreadsheetApp.getUi().createMenu('🗑️ Gestión de Datos')
-      .addItem('📊 Ver Resumen de Datos', 'verResumenDatos')
-      .addItem('🗑️ Limpiar Datos Antiguos (>1 mes)', 'limpiarDatosAntiguosManual')
-      .addSeparator()
-      .addItem('📋 Ver Log de Errores', 'verLogErrores')
-      .addItem('🗑️ Limpiar Log de Errores', 'limpiarLogErrores'))
     .addSubMenu(SpreadsheetApp.getUi().createMenu('🔍 Diagnóstico')
       .addItem('🕐 Verificar Horario Actual', 'verificarHorarioActual')
-      .addItem('🗄️ Probar Conexión a Base de Datos', 'verificarConexionBD')
-      .addItem('🧪 Probar Sistema Completo', 'probarSistemaCompleto'))
+      .addItem('📋 Ver Log de Errores', 'verLogErrores')
+      .addItem('🗑️ Limpiar Log de Errores', 'limpiarLogErrores'))
     .addSeparator()
-    .addSubMenu(SpreadsheetApp.getUi().createMenu('🧪 Pruebas de Notificación')
+    .addSubMenu(SpreadsheetApp.getUi().createMenu('🧪 Pruebas')
+      .addItem('🔬 Probar Sistema Completo', 'probarSistemaCompleto')
       .addItem('📋 Probar Retención', 'probarNotificacionOrdenRetenida')
       .addItem('✅ Probar Liberación', 'probarNotificacionOrdenLiberada')
       .addItem('✏️ Prueba Personalizada', 'probarNotificacionRetenidaPersonalizada'))
     .addSeparator()
-    .addItem('🔄 Ejecutar Reporte Ahora (Manual)', 'reporteDiario')
+    .addItem('🔄 Ejecutar Reporte Ahora', 'reporteDiario')
+    .addItem('🔍 Verificar Cambios Ahora', 'verificarCambios')
     .addToUi();
 }
