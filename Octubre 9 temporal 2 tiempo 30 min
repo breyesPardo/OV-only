@@ -468,42 +468,142 @@ const reporteDiario = () => reporteDiarioConManejo();
 
 function configurarTriggerCompleto() {
   const ui = SpreadsheetApp.getUi();
-  const opcionTiempo = ui.alert('⏰ Configuración de Tiempo', 'Selecciona el tipo de configuración:\n\nYES = Configurar reporte diario (hora o hora:minutos)\nNO = Configurar para prueba única (se ejecutará en X minutos)', ui.ButtonSet.YES_NO_CANCEL);
+  
+  // Paso 1: Tipo de configuración (Diario o Prueba única)
+  const opcionTiempo = ui.alert('⏰ Configuración de Tiempo', 
+    'Selecciona el tipo de configuración:\n\n' +
+    'YES = Configurar reporte diario (hora o hora:minutos)\n' +
+    'NO = Configurar para prueba única (se ejecutará en X minutos)', 
+    ui.ButtonSet.YES_NO_CANCEL);
+  
   if (opcionTiempo === ui.Button.CANCEL) return;
-  const tipoVerificacion = ui.alert('🔄 Tipo de Verificación', 'YES = 24 horas\nNO = Solo horario laboral', ui.ButtonSet.YES_NO_CANCEL);
+  
+  // Paso 2: Tipo de verificación (24h o Laboral)
+  const tipoVerificacion = ui.alert('🔄 Tipo de Verificación', 
+    'YES = 24 horas\n' +
+    'NO = Solo horario laboral (8 AM - 6 PM)', 
+    ui.ButtonSet.YES_NO_CANCEL);
+  
   if (tipoVerificacion === ui.Button.CANCEL) return;
+  
+  // Paso 3: NUEVO - Intervalo personalizado de verificación
+  const respuestaIntervalo = ui.prompt('⏱️ Intervalo de Verificación', 
+    'Cada cuántos minutos debe verificar cambios:\n\n' +
+    '• Mínimo: 1 minuto\n' +
+    '• Máximo: 30 minutos\n' +
+    '• Recomendado: 5 minutos\n\n' +
+    'Ingresa el número de minutos:', 
+    ui.ButtonSet.OK_CANCEL);
+  
+  if (respuestaIntervalo.getSelectedButton() !== ui.Button.OK) return;
+  
+  const minutos = parseInt(respuestaIntervalo.getResponseText().trim());
+  
+  if (isNaN(minutos) || minutos < 1 || minutos > 30) {
+    showAlert('❌ Error', 'El intervalo debe ser entre 1 y 30 minutos');
+    return;
+  }
+  
   configuracionInicial();
+  
   try {
+    // Eliminar todos los triggers existentes
     ScriptApp.getProjectTriggers().forEach(trigger => ScriptApp.deleteTrigger(trigger));
+    
     if (opcionTiempo === ui.Button.YES) {
-      const tiempoReporte = ui.prompt('⏰ Hora del Reporte Diario', 'Ingresa la hora en uno de estos formatos:\n• Solo hora: 7 (para las 7:00 AM)\n• Hora y minutos: 7:30 o 7-30 (para las 7:30 AM)\n• Formato 24h: 15:45 o 15-45 (para las 3:45 PM)', ui.ButtonSet.OK_CANCEL).getResponseText().trim();
-      if (!tiempoReporte) { showAlert('❌ Error', 'Debe ingresar un horario'); return; }
-      let hora, minutos = 0;
+      // Configuración de reporte diario
+      const tiempoReporte = ui.prompt('⏰ Hora del Reporte Diario', 
+        'Ingresa la hora en uno de estos formatos:\n' +
+        '• Solo hora: 7 (para las 7:00 AM)\n' +
+        '• Hora y minutos: 7:30 o 7-30 (para las 7:30 AM)\n' +
+        '• Formato 24h: 15:45 o 15-45 (para las 3:45 PM)', 
+        ui.ButtonSet.OK_CANCEL).getResponseText().trim();
+      
+      if (!tiempoReporte) { 
+        showAlert('❌ Error', 'Debe ingresar un horario'); 
+        return; 
+      }
+      
+      let hora, minutosReporte = 0;
       if (tiempoReporte.includes(':') || tiempoReporte.includes('-')) {
         const partes = tiempoReporte.split(/[:-]/).map(p => parseInt(p.trim()));
-        hora = partes[0]; minutos = partes[1] || 0;
-      } else { hora = parseInt(tiempoReporte); }
-      if (isNaN(hora) || hora < 0 || hora > 23 || isNaN(minutos) || minutos < 0 || minutos > 59) {
-        showAlert('❌ Error', 'Horario inválido. Hora debe ser 0-23 y minutos 0-59'); return;
+        hora = partes[0]; 
+        minutosReporte = partes[1] || 0;
+      } else { 
+        hora = parseInt(tiempoReporte); 
       }
+      
+      if (isNaN(hora) || hora < 0 || hora > 23 || isNaN(minutosReporte) || minutosReporte < 0 || minutosReporte > 59) {
+        showAlert('❌ Error', 'Horario inválido. Hora debe ser 0-23 y minutos 0-59'); 
+        return;
+      }
+      
       const fechaBase = new Date();
-      fechaBase.setHours(hora); fechaBase.setMinutes(minutos); fechaBase.setSeconds(0);
+      fechaBase.setHours(hora); 
+      fechaBase.setMinutes(minutosReporte); 
+      fechaBase.setSeconds(0);
+      
       const ahora = new Date();
       if (fechaBase <= ahora) fechaBase.setDate(fechaBase.getDate() + 1);
-      ScriptApp.newTrigger('reporteDiarioConManejo').timeBased().atHour(hora).nearMinute(minutos).everyDays(1).inTimezone("America/Bogota").create();
-      const horaFormateada = `${hora.toString().padStart(2, '0')}:${minutos.toString().padStart(2, '0')}`;
-      showAlert('✅ Configuración Completa', `Sistema configurado correctamente\n\n📅 Reporte diario: ${horaFormateada} (America/Bogota)\n🔄 Primera ejecución: ${formatDate(fechaBase, "dd/MM/yyyy HH:mm")}\n\nNota: Los triggers pueden ejecutarse hasta 15 minutos antes o después de la hora configurada`);
+      
+      ScriptApp.newTrigger('reporteDiarioConManejo')
+        .timeBased()
+        .atHour(hora)
+        .nearMinute(minutosReporte)
+        .everyDays(1)
+        .inTimezone("America/Bogota")
+        .create();
+      
+      const horaFormateada = `${hora.toString().padStart(2, '0')}:${minutosReporte.toString().padStart(2, '0')}`;
+      
+      showAlert('✅ Configuración Completa', 
+        `Sistema configurado correctamente\n\n` +
+        `📅 Reporte diario: ${horaFormateada} (America/Bogota)\n` +
+        `🔄 Primera ejecución: ${formatDate(fechaBase, "dd/MM/yyyy HH:mm")}\n` +
+        `⏱️ Verificación cada: ${minutos} minuto${minutos > 1 ? 's' : ''}\n` +
+        `🕐 Horario: ${tipoVerificacion === ui.Button.YES ? '24 horas' : '8 AM - 6 PM'}\n\n` +
+        `Nota: Los triggers pueden ejecutarse hasta 15 minutos antes o después de la hora configurada`);
+        
     } else {
-      const minutos = parseInt(ui.prompt('🧪 Configuración de Prueba', 'Ingresa en cuántos minutos ejecutar el reporte (1-59):', ui.ButtonSet.OK_CANCEL).getResponseText());
-      if (isNaN(minutos) || minutos < 1 || minutos > 59) { showAlert('❌ Error', 'Minutos inválidos'); return; }
+      // Configuración de prueba única
+      const minutosEspera = parseInt(ui.prompt('🧪 Configuración de Prueba', 
+        'Ingresa en cuántos minutos ejecutar el reporte (1-59):', 
+        ui.ButtonSet.OK_CANCEL).getResponseText());
+      
+      if (isNaN(minutosEspera) || minutosEspera < 1 || minutosEspera > 59) { 
+        showAlert('❌ Error', 'Minutos inválidos'); 
+        return; 
+      }
+      
       const ahora = new Date();
-      ahora.setMinutes(ahora.getMinutes() + minutos);
-      ScriptApp.newTrigger('reporteDiarioConManejo').timeBased().at(ahora).create();
-      showAlert('✅ Configuración de Prueba', `El reporte se ejecutará en ${minutos} minutos\nHora aproximada: ${formatDate(ahora, "HH:mm")} (${Session.getScriptTimeZone()})\n\nNOTA: Este es un trigger único para prueba`);
+      ahora.setMinutes(ahora.getMinutes() + minutosEspera);
+      
+      ScriptApp.newTrigger('reporteDiarioConManejo')
+        .timeBased()
+        .at(ahora)
+        .create();
+      
+      showAlert('✅ Configuración de Prueba', 
+        `El reporte se ejecutará en ${minutosEspera} minutos\n` +
+        `Hora aproximada: ${formatDate(ahora, "HH:mm")} (${Session.getScriptTimeZone()})\n` +
+        `⏱️ Verificación cada: ${minutos} minuto${minutos > 1 ? 's' : ''}\n` +
+        `🕐 Horario: ${tipoVerificacion === ui.Button.YES ? '24 horas' : '8 AM - 6 PM'}\n\n` +
+        `NOTA: Este es un trigger único para prueba`);
     }
+    
+    // Crear trigger de verificación con el intervalo personalizado
     const funcionVerificacion = tipoVerificacion === ui.Button.YES ? 'verificarCambios' : 'verificarCambiosHorarioLaboral';
-    ScriptApp.newTrigger(funcionVerificacion).timeBased().everyMinutes(5).create();
-    registrarError("Configuración", "Triggers configurados exitosamente", opcionTiempo === ui.Button.YES ? "Reporte diario" : "Prueba única");
+    
+    ScriptApp.newTrigger(funcionVerificacion)
+      .timeBased()
+      .everyMinutes(minutos)  // ⭐ USAR EL INTERVALO PERSONALIZADO
+      .create();
+    
+    registrarError("Configuración", "Triggers configurados exitosamente", 
+      opcionTiempo === ui.Button.YES ? 
+        `Reporte diario, verificación cada ${minutos} min` : 
+        `Prueba única, verificación cada ${minutos} min`);
+        
   } catch (e) {
     registrarError("Configuración Trigger", "Error", e.message);
     showAlert('❌ Error', 'Error al configurar: ' + e.message);
@@ -515,33 +615,71 @@ function verTriggersActivos() {
   const zona = Session.getScriptTimeZone();
   const horaActual = formatDate(new Date(), "HH:mm:ss");
   const zonaHorariaSpreadsheet = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
-  let info = `🌎 INFORMACIÓN DE ZONA HORARIA:\nZona del Script: ${zona}\nZona de la Hoja: ${zonaHorariaSpreadsheet}\nHora actual: ${horaActual}\n\n📅 TRIGGERS CONFIGURADOS:\n`;
+  
+  let info = `🌎 INFORMACIÓN DE ZONA HORARIA:\n`;
+  info += `Zona del Script: ${zona}\n`;
+  info += `Zona de la Hoja: ${zonaHojariaSpreadsheet}\n`;
+  info += `Hora actual: ${horaActual}\n\n`;
+  info += `📅 TRIGGERS CONFIGURADOS:\n`;
+  
   if (triggers.length === 0) {
     info += 'No hay triggers configurados';
   } else {
     triggers.forEach((t, i) => {
       const handler = t.getHandlerFunction();
       let details = '';
+      
       try {
         const type = t.getEventType();
         if (type === ScriptApp.EventType.CLOCK) {
           details = ' (Trigger de tiempo)';
-          if (handler === 'reporteDiarioConManejo') details += ' - REPORTE DIARIO';
+          
+          if (handler === 'reporteDiarioConManejo') {
+            details += ' - 📅 REPORTE DIARIO';
+          } else if (handler === 'verificarCambios') {
+            // ⭐ INTENTAR OBTENER EL INTERVALO EXACTO
+            try {
+              const triggerSource = t.getTriggerSource();
+              if (triggerSource === ScriptApp.TriggerSource.CLOCK) {
+                details += ' - ⏱️ VERIFICACIÓN AUTOMÁTICA (24h)';
+              }
+            } catch (e) {
+              details += ' - ⏱️ VERIFICACIÓN AUTOMÁTICA (24h)';
+            }
+          } else if (handler === 'verificarCambiosHorarioLaboral') {
+            details += ' - ⏱️ VERIFICACIÓN AUTOMÁTICA (8AM-6PM)';
+          }
         }
       } catch (e) {}
+      
       info += `${i + 1}. ${handler}${details}\n`;
     });
+    
+    // ⭐ AGREGAR NOTA EXPLICATIVA
+    info += `\n💡 Las verificaciones automáticas se ejecutan según\nel intervalo configurado (normalmente cada 5-15 min)`;
   }
+  
   const hojaErrores = getSheet(CONFIG.HOJAS.errores.nombre, null, false);
   if (hojaErrores && hojaErrores.getLastRow() > 1) {
     const datos = hojaErrores.getDataRange().getValues();
     for (let i = datos.length - 1; i >= 1 && i >= datos.length - 10; i--) {
       if (datos[i][2] === 'Reporte Diario' && datos[i][3].includes('Completado')) {
-        info += `\n✅ Última ejecución exitosa del reporte:\n${datos[i][0]} ${datos[i][1]}`;
+        info += `\n\n✅ Última ejecución exitosa del reporte:\n${datos[i][0]} ${datos[i][1]}`;
+        break;
+      }
+      if (datos[i][2] === 'Configuración' && datos[i][3].includes('Triggers configurados')) {
+        const detalles = datos[i][4]; // Columna "Detalles"
+        if (detalles && detalles.includes('verificación cada')) {
+          const match = detalles.match(/verificación cada (\d+) min/);
+          if (match) {
+            info += `\n\n⏱️ Intervalo configurado: cada ${match[1]} minuto${match[1] > 1 ? 's' : ''}`;
+          }
+        }
         break;
       }
     }
   }
+  
   showAlert('📅 Triggers y Zona Horaria', info);
 }
 
