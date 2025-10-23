@@ -1090,7 +1090,7 @@ function prepararOrdenesParaEnvio(ordenesRetenidasActuales, ordenesLiberadasActu
   return ordenesParaEnviar;
 }
 
-// ⭐⭐⭐ FUNCIÓN ACTUALIZADA CON NUEVOS PARÁMETROS SEGÚN LAS IMÁGENES ⭐⭐⭐
+// ⭐⭐⭐ FUNCIÓN ACTUALIZADA - AGRUPA TODAS LAS ÓRDENES POR ZONA ⭐⭐⭐
 function enviarNotificaciones(ordenesParaEnviar, sheets, controlData, fechaHoy, horaActual) {
   if (ordenesParaEnviar.length === 0) {
     Logger.log("ℹ️ No hay órdenes para enviar");
@@ -1124,58 +1124,125 @@ function enviarNotificaciones(ordenesParaEnviar, sheets, controlData, fechaHoy, 
   const contactos = cargarContactosZonas();
   const actualizacionesControl = [];
   
-  // Agrupar órdenes por cliente
-  const ordenesPorCliente = {};
+  // ⭐⭐ CAMBIO CRÍTICO: AGRUPAR POR ZONA Y TIPO, NO POR CLIENTE ⭐⭐
+  const ordenesPorZona = {};
   ordenesParaEnviar.forEach(({ orden, tipo, datos, esLiberada }) => {
-    const key = `${datos.cliente}_${datos.zona}_${esLiberada}`;
-    if (!ordenesPorCliente[key]) {
-      ordenesPorCliente[key] = {
-        cliente: datos.cliente,
+    // Clave solo por zona y si es liberada o retenida
+    const key = `${datos.zona}_${esLiberada}`;
+    
+    if (!ordenesPorZona[key]) {
+      ordenesPorZona[key] = {
         zona: datos.zona,
-        ordenes: [],
-        datos: datos,
         esLiberada: esLiberada,
-        tipo: tipo
+        tipo: tipo,
+        detallesOrdenes: []  // Array para guardar detalles de cada orden
       };
     }
-    ordenesPorCliente[key].ordenes.push(orden);
+    
+    // Agregar detalles de esta orden
+    ordenesPorZona[key].detallesOrdenes.push({
+      orden: orden,
+      cliente: datos.cliente,
+      fecha: datos.fecha,
+      hora: datos.hora || "",
+      observacion: datos.observacion
+    });
   });
   
-  // Enviar notificaciones
-  Object.values(ordenesPorCliente).forEach(({ cliente, zona, ordenes, datos, esLiberada, tipo }) => {
+  // Enviar notificaciones agrupadas por zona
+  Object.values(ordenesPorZona).forEach(({ zona, esLiberada, tipo, detallesOrdenes }) => {
     const numeroWhatsApp = contactos.zonaANumero[zona] || "3182260739";
     const representante = contactos.zonaANombre[zona] || "Representante sin asignar";
     const telefono = "57" + numeroWhatsApp;
     const representanteCorto = formatearNombreCorto(representante);
-    const ordenesUnificadas = ordenes.join(', ');
-    
-    const clienteNormalizado = normalizarCliente(cliente);
     const zonaNormalizada = normalizarNombreZona(zona);
-    const observacionNormalizada = normalizarObservacion(datos.observacion);
     
-    // ⭐⭐ PARÁMETROS ACTUALIZADOS SEGÚN LAS IMÁGENES ⭐⭐
+    // ⭐⭐ PREPARACIÓN DE DATOS MEJORADA PARA MAYOR CLARIDAD ⭐⭐
+    
+    // 1. CONSOLIDAR ÓRDENES
+    const todasLasOrdenes = detallesOrdenes.map(d => d.orden);
+    const cantidadOrdenes = todasLasOrdenes.length;
+    const listaOrdenes = todasLasOrdenes.join(', ');
+    
+    // 2. CREAR RESUMEN DE ÓRDENES MÁS CLARO
+    let resumenOrdenes = "";
+    if (cantidadOrdenes === 1) {
+      resumenOrdenes = `Orden ${todasLasOrdenes[0]}`;
+    } else if (cantidadOrdenes <= 5) {
+      resumenOrdenes = `${cantidadOrdenes} órdenes: ${listaOrdenes}`;
+    } else {
+      // Si hay muchas órdenes, abreviar la lista para que no sea muy larga en el mensaje
+      resumenOrdenes = `${cantidadOrdenes} órdenes: ${todasLasOrdenes.slice(0, 5).join(', ')}... (+${cantidadOrdenes - 5} más)`;
+    }
+    
+    // 3. CONSOLIDAR CLIENTES - MOSTRAR TODOS LOS NOMBRES
+    const clientesUnicos = [...new Set(detallesOrdenes.map(d => normalizarCliente(d.cliente)))];
+    
+    // ⭐ MOSTRAR TODOS LOS CLIENTES, SIN IMPORTAR CUÁNTOS SEAN
+    const resumenClientes = clientesUnicos.join(', ');
+    
+    // 4. CONSOLIDAR OBSERVACIONES DE FORMA MÁS CLARA
+    const observacionesUnicas = [...new Set(detallesOrdenes
+      .map(d => d.observacion)
+      .filter(obs => obs && obs !== "SIN OBSERVACIONES"))];
+    
+    let resumenObservaciones = "";
+    if (observacionesUnicas.length === 0) {
+      resumenObservaciones = "Sin observaciones específicas";
+    } else if (observacionesUnicas.length === 1) {
+      resumenObservaciones = normalizarObservacion(observacionesUnicas[0]);
+    } else if (observacionesUnicas.length <= 3) {
+      // Si hay 2 o 3 observaciones, mostrar todas
+      resumenObservaciones = observacionesUnicas
+        .map(obs => normalizarObservacion(obs))
+        .join(' | ');
+    } else {
+      // Si hay más de 3 observaciones diferentes, mostrar las primeras 3 y indicar que hay más
+      resumenObservaciones = observacionesUnicas
+        .slice(0, 3)
+        .map(obs => normalizarObservacion(obs))
+        .join(' | ') + ` (+${observacionesUnicas.length - 3} más)`;
+    }
+    
+    // 5. USAR LA FECHA/HORA MÁS RECIENTE
+    const fechaMasReciente = detallesOrdenes[0].fecha;
+    const horaMasReciente = detallesOrdenes[0].hora;
+    
+    // 6. CREAR TEXTO DE ESTADO MÁS CLARO
+    const textoEstado = esLiberada ? 
+      `${cantidadOrdenes} ${cantidadOrdenes === 1 ? 'orden liberada' : 'órdenes liberadas'}` :
+      `${cantidadOrdenes} ${cantidadOrdenes === 1 ? 'orden retenida' : 'órdenes retenidas'}`;
+    
+    // ⭐⭐ PARÁMETROS REORGANIZADOS PARA MAYOR CLARIDAD ⭐⭐
     const params = esLiberada ? 
       { 
-        "1": representanteCorto,          // ⭐ $(1) = Representante (CORREGIDO)
-        "2": ordenesUnificadas,           // ⭐ $(2) = Órdenes (CORREGIDO)  
-        "3": `${procesarFecha(datos.fecha)} ${datos.hora || ""}`.trim(),  // ⭐ $(3) = Fecha/Hora (CORREGIDO)
-        "4": clienteNormalizado,          // ⭐ $(4) = Cliente (CORREGIDO)
-        "5": zonaNormalizada              // ⭐ $(5) = Zona (CORREGIDO)
+        "1": representanteCorto,          
+        "2": resumenOrdenes,  // Ej: "3 órdenes: 134612, 134610, 134608"
+        "3": `${procesarFecha(fechaMasReciente)} ${horaMasReciente}`.trim(),
+        "4": resumenClientes,  // TODOS los clientes: "Cliente A, Cliente B, Cliente C, Cliente D..."
+        "5": zonaNormalizada
       } : 
       { 
-        "1": representanteCorto,          // ⭐ $(1) = Representante (CORREGIDO)
-        "2": ordenesUnificadas,           // ⭐ $(2) = Órdenes (CORREGIDO)
-        "3": `${procesarFecha(datos.fecha)}`,  // ⭐ $(3) = Fecha/Hora (CORREGIDO)
-        "4": clienteNormalizado,          // ⭐ $(4) = Cliente (CORREGIDO)
-        "5": zonaNormalizada,             // ⭐ $(5) = Zona (CORREGIDO)
-        "6": observacionNormalizada       // ⭐ $(6) = Observaciones (CORREGIDO)
+        "1": representanteCorto,
+        "2": resumenOrdenes,  // Ej: "3 órdenes: 134612, 134610, 134608"
+        "3": procesarFecha(fechaMasReciente),
+        "4": resumenClientes,  // TODOS los clientes: "Cliente A, Cliente B, Cliente C, Cliente D..."
+        "5": zonaNormalizada,
+        "6": resumenObservaciones  // Ej: "Crédito superado" o "Múltiples motivos: ..."
       };
     
-    // ⭐ ENVIAR AL REPRESENTANTE PRINCIPAL
-    const enviado = enviarNotificacionConReintentos(credenciales, telefono, esLiberada, params, ordenesUnificadas, tipo);
+    Logger.log(`📨 Enviando mensaje consolidado a ${representante} (${zona})`);
+    Logger.log(`   📊 Resumen: ${textoEstado}`);
+    Logger.log(`   📋 Órdenes: ${listaOrdenes}`);
+    Logger.log(`   🏢 Clientes: ${resumenClientes}`);
+    Logger.log(`   📝 Observaciones: ${resumenObservaciones}`);
+    
+    // ⭐ ENVIAR UN ÚNICO MENSAJE AL REPRESENTANTE
+    const enviado = enviarNotificacionConReintentos(credenciales, telefono, esLiberada, params, listaOrdenes, tipo);
     
     if (enviado) {
-      ordenes.forEach(orden => {
+      // Registrar todas las órdenes como enviadas
+      detallesOrdenes.forEach(({ orden, cliente }) => {
         const controlExistente = controlData[orden];
         actualizacionesControl.push({ 
           orden, 
@@ -1191,7 +1258,7 @@ function enviarNotificaciones(ordenesParaEnviar, sheets, controlData, fechaHoy, 
         });
       });
       
-      // ⭐ ENVIAR COPIAS SI ESTÁ ACTIVO
+      // ⭐ ENVIAR COPIAS SI ESTÁ ACTIVO (también consolidadas)
       if (copiaActiva && numerosCopiasArray.length > 0) {
         const debeEnviarCopia = !zonasPermitidasCopia || zonasPermitidasCopia.has(zona);
         
@@ -1204,12 +1271,12 @@ function enviarNotificaciones(ordenesParaEnviar, sheets, controlData, fechaHoy, 
               "57" + numeroCopia, 
               esLiberada, 
               params, 
-              ordenesUnificadas, 
+              listaOrdenes, 
               `copia_${index + 1}_${tipo}`
             );
           });
           
-          Logger.log(`✅ Copias enviadas a ${numerosCopiasArray.length} números para orden(es): ${ordenesUnificadas}`);
+          Logger.log(`✅ Copias enviadas a ${numerosCopiasArray.length} números para ${cantidadOrdenes} órdenes de zona ${zona}`);
         }
       }
     }
