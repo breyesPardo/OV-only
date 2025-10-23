@@ -1,0 +1,1124 @@
+// ======================================================
+// SISTEMA DE ÓRDENES (Epicor → Hojas → Notifs) - versión unificada y estandarizada
+// ======================================================
+
+// ================== CONFIGURACIÓN Y CONSTANTES ==================
+const CONFIG = {
+  HOJAS: {
+    ordenes: {
+      nombre: "OrdenesRetenidas",
+      headers: ["Zona", "Cliente", "Orden", "Fecha", "Observación", "Estado", "Motivo Retención"]
+    },
+    logs: {
+      nombre: "LogsLiberaciones",
+      headers: ["OrderNum", "Zona", "Cliente", "Fecha Liberación", "Hora Liberación", "UsuarioID", "Nombre Usuario", "Observaciones", "Estado"]
+    },
+    control: {
+      nombre: "ControlEnvios",
+      headers: ["Número de Orden", "Estado Actual", "Fecha Último Envío", "Hora Último Envío", "Tipo de Notificación", "¿Retenida Notificada Hoy?", "¿Liberación Notificada Hoy?", "Cliente", "Zona"]
+    },
+    contactos: {
+      nombre: "ContactosZonas",
+      headers: ["Zona", "Nombre Representante", "WhatsApp", "Email", "Activo"]
+    },
+    errores: {
+      nombre: "LogErrores",
+      headers: ["Fecha", "Hora", "Tipo", "Error", "Detalles"]
+    }
+  },
+  CONTACTOS_INICIALES: [
+    ["Zona1Cundinamarca-Boyacá-Santa", "Juan Camilo Gil Orjuela", "3182260739", "", "SI"],
+    ["Zona2-Cundinamarca", "Sergio Andres Rojas Sanchez", "3182260739", "", "SI"],
+    ["Zona3-Boyacá", "Yury Fonseca Patarroyo", "3182260739", "", "SI"],
+    ["Zona4-Santander-Cesar", "Oscar Fernando Chingate Cruz", "3182260739", "", "SI"],
+    ["Zona5-Norte de Santander", "Freddy Andres Bastianelli Fontana", "3182260739", "", "SI"],
+    ["Zona6-Suroeste Antioqueño", "Carlos Andres Arboleda Tabares", "3182260739", "", "SI"],
+    ["Zona7-Oriente y Nte Antioquía", "Rafael Leonardo Peña Sarmiento", "3182260739", "", "SI"],
+    ["Zona8-Meta", "Ximena Nathalia Nuñez Cruz", "3182260739", "", "SI"],
+    ["Zona9-Casanaré", "Angel Alonso Vasquez Morales", "3182260739", "", "SI"],
+    ["Zona10-Tolima Centro - Norte", "Assad Fraija Lopera", "3182260739", "", "SI"],
+    ["Zona11-Tolima Sur y Oriente", "Edna Liliana Portillo", "3182260739", "", "SI"],
+    ["Zona12-Huila Norte", "Domingo Jose Soto Martinez", "3182260739", "", "SI"],
+    ["Zona14-HuilaCentroSur-Caquetá", "Ivan Dario Lopez Rubio", "3182260739", "", "SI"],
+    ["Zona15-Cauca", "Claudia Patricia Ussa", "3182260739", "", "SI"],
+    ["Zona16-Nariño", "Carlos Alberto Castillo Ñañez", "3182260739", "", "SI"],
+    ["Zona17-Valle", "Diego Herney Guisa Velasquez", "3182260739", "", "SI"],
+    ["Zona18-Eje Cafetero", "Juan Pablo Londoño Aristizabal", "3182260739", "", "SI"],
+    ["Zona 19 Palma", "Juan Pablo Carranza", "3182260739", "", "SI"],
+    ["Zona 20 Urabá", "Gadelia Gliseth Gomez Gomez", "3182260739", "", "SI"],
+    ["Zona 21 Caña", "Juan Pablo Carranza", "3182260739", "", "SI"],
+    ["Zona 23 - Caribe seco", "Sandra Judith Castillo", "3182260739", "", "SI"],
+    ["Zona 25 Flores", "Javier Leonardo Erazo Velandia", "3182260739", "", "SI"],
+    ["Ecuador", "Sandra Valverde", "3182260739", "", "SI"],
+    ["Licitaciones Colinagro", "Sandra Valverde", "3182260739", "", "SI"],
+    ["Bolivia", "Representante sin asignar", "3182260739", "", "SI"],
+    ["Gerencia General", "Representante sin asignar", "3182260739", "", "SI"],
+    ["Republica Dominicana", "Representante sin asignar", "3182260739", "", "SI"]
+  ],
+  MESES_HISTORIAL: 2
+};
+
+const RULES = {
+  RETENIDA: 'orden_retenida_c',
+  LIBERADA: 'orden_liberada_c'
+};
+
+const CACHE = { credenciales: null, contactos: null, ultimaCarga: 0 };
+const SHEETS_CACHE = {};
+const PREPOSICIONES = new Set(['de', 'del', 'la', 'las', 'los', 'da', 'do', 'dos']);
+
+// ================== UTILIDADES GENERALES ==================
+const showAlert = (titulo, mensaje) => SpreadsheetApp.getUi().alert(titulo, mensaje, SpreadsheetApp.getUi().ButtonSet.OK);
+
+function formatDate(fecha, formato = "dd/MM/yyyy") {
+  if (!fecha) return "Sin fecha";
+  try {
+    const fechaObj = fecha instanceof Date ? fecha : new Date(fecha);
+    return Utilities.formatDate(fechaObj, "America/Bogota", formato);
+  } catch (e) { return String(fecha); }
+}
+function procesarFecha(fechaString) {
+  if (!fechaString) return "";
+  fechaString = String(fechaString);
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(fechaString)) return fechaString;
+  if (fechaString.includes('T') || fechaString.includes('-')) {
+    try {
+      const [a, m, d] = fechaString.split('T')[0].split('-');
+      return `${d.padStart(2,'0')}/${m.padStart(2,'0')}/${a}`;
+    } catch (e) {}
+  }
+  return fechaString;
+}
+function safeJsonParse(txt){ try{ return JSON.parse(txt);}catch(e){ return null;} }
+function httpSuccess(resp){
+  try{ const c = resp.getResponseCode(); if(c>=200&&c<300)return true;}catch(e){}
+  const j = safeJsonParse(resp.getContentText()||''); return !!(j && (j.success || (j.id && j.problems===null)));
+}
+function normalizarClaveZona(z){ return String(z||'').replace(/\s+/g,' ').trim(); }
+
+// ================== LOG DE ERRORES ==================
+function registrarError(tipo, error, detalles=''){
+  try{
+    const hoja = getSheet(CONFIG.HOJAS.errores.nombre, CONFIG.HOJAS.errores.headers);
+    const fecha = formatDate(new Date()), hora = formatDate(new Date(), "HH:mm:ss");
+    const ultima = hoja.getLastRow(), max = hoja.getMaxRows();
+    if (ultima >= max - 10) hoja.deleteRows(2, Math.floor(ultima/2));
+    else if (ultima > 1001) hoja.deleteRows(2, ultima - 1001);
+    hoja.appendRow([fecha, hora, tipo, error, detalles]);
+  }catch(e){ Logger.log('Error al registrar error: '+e.message); }
+}
+
+// ================== HOJAS ==================
+function getSheet(nombre, headers=null, crear=true){
+  if (SHEETS_CACHE[nombre]) return SHEETS_CACHE[nombre];
+  let hoja = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(nombre);
+  if (!hoja && crear){
+    hoja = SpreadsheetApp.getActiveSpreadsheet().insertSheet(nombre);
+    if (headers){
+      hoja.getRange(1,1,1,headers.length).setValues([headers]).setFontWeight("bold").setBackground("#4285f4").setFontColor("white");
+      hoja.setFrozenRows(1); hoja.autoResizeColumns(1, headers.length);
+    }
+  }
+  if (hoja) SHEETS_CACHE[nombre] = hoja;
+  return hoja;
+}
+
+// ================== NORMALIZACIÓN DE TEXTO ==================
+function normalizarTexto(texto){
+  if (!texto) return "";
+  texto = String(texto).trim();
+  if (texto === texto.toUpperCase()){
+    return texto.toLowerCase().split(' ').map(p=>{
+      if (PREPOSICIONES.has(p.toLowerCase()) && p.length<=3) return p.toLowerCase();
+      return p.charAt(0).toUpperCase()+p.slice(1).toLowerCase();
+    }).join(' ');
+  }
+  return texto;
+}
+function normalizarCliente(cliente){
+  if (!cliente) return "";
+  cliente = String(cliente).trim();
+  if (cliente === cliente.toUpperCase()){
+    const esp={'sas':'SAS','s.a.s':'S.A.S','s.a':'S.A','sa':'S.A','ltda':'Ltda','cia':'Cía','e.u':'E.U','eu':'E.U'};
+    return cliente.toLowerCase().split(' ').map(p=>{
+      const k=p.toLowerCase().replace(/\./g,''); if (esp[k]) return esp[k];
+      if (PREPOSICIONES.has(p.toLowerCase()) && p.length<=3) return p.toLowerCase();
+      return p.charAt(0).toUpperCase()+p.slice(1).toLowerCase();
+    }).join(' ');
+  }
+  return cliente;
+}
+function normalizarObservacion(observacion){
+  if (!observacion) return "";
+  observacion = String(observacion).trim();
+  if (observacion === observacion.toUpperCase()){
+    return observacion.toLowerCase().split(' ').map(p=>{
+      if (PREPOSICIONES.has(p.toLowerCase()) && p.length<=3) return p.toLowerCase();
+      return p.charAt(0).toUpperCase()+p.slice(1).toLowerCase();
+    }).join(' ');
+  }
+  return observacion;
+}
+function normalizarNombreZona(z){ return z? String(z).trim(): ""; }
+function formatearNombreCorto(nombre){
+  if (!nombre) return "Representante";
+  const partes = nombre.trim().split(/\s+/).slice(0,2).filter(p=>!PREPOSICIONES.has(p.toLowerCase()));
+  return partes.length>0? partes.join(' '): nombre.split(/\s+/).slice(0,2).join(' ');
+}
+
+// ================== CREDENCIALES Y ZONA HORARIA ==================
+function verificarZonaHoraria(){
+  const zonaActual = Session.getScriptTimeZone();
+  if (zonaActual !== "America/Bogota"){
+    try{
+      SpreadsheetApp.getActiveSpreadsheet().setSpreadsheetTimeZone("America/Bogota");
+      Logger.log("Zona horaria actualizada a America/Bogota");
+    }catch(e){ registrarError("Zona Horaria","No se pudo establecer zona horaria America/Bogota", e.message); }
+  }
+}
+function getCredenciales(){
+  if (CACHE.credenciales) return CACHE.credenciales;
+  const props = PropertiesService.getScriptProperties();
+  CACHE.credenciales = {
+    DB: { url: props.getProperty('DB_URL'), user: props.getProperty('DB_USER'), pass: props.getProperty('DB_PASS') },
+    API: { url: props.getProperty('API_URL'), token: props.getProperty('API_TOKEN'), channel: props.getProperty('API_CHANNEL') }
+  };
+  return CACHE.credenciales;
+}
+function verPropiedadesGuardadas(){
+  const propiedades = PropertiesService.getScriptProperties().getKeys();
+  showAlert('🔐 Credenciales guardadas', propiedades.length ? propiedades.map(p=>`• ${p}`).join('\n') : 'No hay credenciales guardadas');
+}
+function actualizarCredencial(){
+  const ui=SpreadsheetApp.getUi();
+  const r=ui.prompt('Actualizar Credencial','Opciones: DB_URL, DB_USER, DB_PASS, API_URL, API_TOKEN, API_CHANNEL', ui.ButtonSet.OK_CANCEL);
+  if (r.getSelectedButton()!==ui.Button.OK) return;
+  const nombre=r.getResponseText().trim();
+  const validas=['DB_URL','DB_USER','DB_PASS','API_URL','API_TOKEN','API_CHANNEL'];
+  if (!validas.includes(nombre)){ showAlert('❌ Error','Credencial no válida'); return; }
+  const v=ui.prompt('Nuevo Valor',`Ingresa el nuevo valor para ${nombre}:`, ui.ButtonSet.OK_CANCEL);
+  if (v.getSelectedButton()===ui.Button.OK){
+    PropertiesService.getScriptProperties().setProperty(nombre, v.getResponseText());
+    CACHE.credenciales=null; showAlert('✅ Éxito', `${nombre} actualizada`);
+  }
+}
+function eliminarCredencial(){
+  const ui=SpreadsheetApp.getUi(), props=PropertiesService.getScriptProperties(), keys=props.getKeys();
+  if (!keys.length){ showAlert('Sin Credenciales','No hay credenciales guardadas'); return; }
+  const r=ui.prompt('Eliminar Credencial','Credenciales:\n'+keys.join('\n'), ui.ButtonSet.OK_CANCEL);
+  if (r.getSelectedButton()===ui.Button.OK){
+    const k=r.getResponseText().trim(); if (keys.includes(k)){ props.deleteProperty(k); CACHE.credenciales=null; showAlert('✅ Éxito', `${k} eliminada`); }
+  }
+}
+
+// ================== CONTACTOS ==================
+function configuracionInicial(){
+  verificarZonaHoraria();
+  const hojaContactos = getSheet(CONFIG.HOJAS.contactos.nombre, CONFIG.HOJAS.contactos.headers);
+  if (hojaContactos.getLastRow()===1){
+    hojaContactos.getRange(2,1,CONFIG.CONTACTOS_INICIALES.length,5).setValues(CONFIG.CONTACTOS_INICIALES);
+    showAlert('✅ Configuración','Hoja de contactos creada con datos iniciales');
+  }
+  getSheet(CONFIG.HOJAS.errores.nombre, CONFIG.HOJAS.errores.headers);
+}
+function cargarContactosZonas(){
+  if (CACHE.contactos && (Date.now()-CACHE.ultimaCarga)<300000) return CACHE.contactos;
+  const hoja = getSheet(CONFIG.HOJAS.contactos.nombre);
+  if (!hoja) throw new Error("No se encontró ContactosZonas");
+  const datos = hoja.getDataRange().getValues();
+  const zonaANumero={}, zonaANombre={};
+  for (let i=1;i<datos.length;i++){
+    const [zona,nombre,whatsapp,,activo]=datos[i];
+    if (String(activo).trim().toUpperCase()==="SI" && zona && whatsapp){
+      const z=normalizarClaveZona(zona), tel=String(whatsapp).trim().replace(/\D/g,'');
+      zonaANumero[z]=tel; zonaANombre[z]=String(nombre).trim()||"Representante sin asignar";
+    }
+  }
+  CACHE.contactos={zonaANumero,zonaANombre}; CACHE.ultimaCarga=Date.now(); return CACHE.contactos;
+}
+
+// ================== LIMPIEZA DE HISTORIAL ==================
+function limpiarHistorialAntiguo(hojaLogs){
+  try{
+    const ultima = hojaLogs.getLastRow(); if (ultima<=1) return;
+    const fechaLimite = new Date(); fechaLimite.setMonth(fechaLimite.getMonth()-CONFIG.MESES_HISTORIAL);
+    Logger.log(`🗑️ Limpiando registros anteriores a: ${formatDate(fechaLimite)} (últimos ${CONFIG.MESES_HISTORIAL} meses)`);
+    const datos = hojaLogs.getRange(2,1,ultima-1,CONFIG.HOJAS.logs.headers.length).getValues();
+    const recientes=[]; let eliminados=0;
+    for(let i=0;i<datos.length;i++){
+      const fl=datos[i][3]; if (!fl || String(datos[i][0]).includes('←')) continue;
+      try{
+        const p=String(fl).split('/'); if (p.length===3){
+          const f=new Date(p[2],p[1]-1,p[0]); if (f>=fechaLimite) recientes.push(datos[i]); else eliminados++;
+        }else recientes.push(datos[i]);
+      }catch(e){ recientes.push(datos[i]); }
+    }
+    if (eliminados>0){
+      if (ultima>1) hojaLogs.deleteRows(2, ultima-1);
+      if (recientes.length>0) hojaLogs.getRange(2,1,recientes.length,CONFIG.HOJAS.logs.headers.length).setValues(recientes);
+      Logger.log(`✅ Limpieza completada: ${eliminados} eliminados, ${recientes.length} conservados`);
+      registrarError("Limpieza Historial", `Eliminados ${eliminados}`, `Conservados: ${recientes.length} (últimos ${CONFIG.MESES_HISTORIAL} meses)`);
+    }else Logger.log(`✅ No hay registros antiguos para eliminar`);
+  }catch(e){ Logger.log(`❌ Error al limpiar historial: ${e.message}`); registrarError("Limpieza Historial","Error", e.message); }
+}
+function limpiarControlEnviosAntiguo(hojaControl){
+  try{
+    const ultima=hojaControl.getLastRow(); if (ultima<=1) return;
+    const lim=new Date(); lim.setDate(lim.getDate()-30);
+    const datos=hojaControl.getRange(2,1,ultima-1,9).getValues(); const recientes=[]; let elim=0;
+    for(let i=0;i<datos.length;i++){
+      const fe=datos[i][2];
+      try{
+        const p=String(fe).split('/'); if (p.length===3){ const f=new Date(p[2],p[1]-1,p[0]); if (f>=lim) recientes.push(datos[i]); else elim++; }
+        else recientes.push(datos[i]);
+      }catch(e){ recientes.push(datos[i]); }
+    }
+    if (elim>0){
+      if (ultima>1) hojaControl.deleteRows(2, ultima-1);
+      if (recientes.length>0) hojaControl.getRange(2,1,recientes.length,9).setValues(recientes);
+      Logger.log(`✅ ControlEnvios limpiado: ${elim} eliminados, ${recientes.length} conservados`);
+    }
+  }catch(e){ Logger.log(`❌ Error al limpiar ControlEnvios: ${e.message}`); }
+}
+
+// ================== GESTIÓN DE TRIGGERS ==================
+function configurarTriggers(tipo){
+  configuracionInicial();
+  ScriptApp.getProjectTriggers().forEach(t=>ScriptApp.deleteTrigger(t));
+  try{
+    ScriptApp.newTrigger('reporteDiarioConManejo').timeBased().atHour(7).everyDays(1).inTimezone("America/Bogota").create();
+    const fn = tipo==='laboral'? 'verificarCambiosHorarioLaboral':'verificarCambios';
+    ScriptApp.newTrigger(fn).timeBased().everyMinutes(5).create();
+    registrarError("Configuración","Triggers configurados exitosamente",`Tipo: ${tipo}`);
+    showAlert('✅ Sistema Configurado', tipo==='laboral'?'Verificaciones solo en horario laboral (8 AM - 6 PM)':'Verificaciones las 24 horas');
+  }catch(e){ registrarError("Trigger","Error al configurar triggers", e.message); showAlert('❌ Error','Error al configurar triggers: '+e.message); }
+}
+const configurarTriggersDiarios=()=>configurarTriggers('24horas');
+const configurarTriggersHorarioLaboral=()=>configurarTriggers('laboral');
+const reporteDiario=()=>reporteDiarioConManejo();
+
+function reporteDiarioConManejo(){
+  try{
+    Logger.log("Iniciando reporte diario a las "+new Date());
+    registrarError("Reporte Diario","Inicio de ejecución", formatDate(new Date(),"HH:mm:ss"));
+    actualizarYEnviarOrdenesCredito(true);
+    registrarError("Reporte Diario","Completado exitosamente", formatDate(new Date(),"HH:mm:ss"));
+  }catch(e){
+    Logger.log("Error en reporte diario: "+e.message);
+    registrarError("Reporte Diario","Error en ejecución", e.message);
+    try{
+      const cred=getCredenciales(); if (cred.API.url && cred.API.token) enviarNotificacionError("Error en Reporte Diario 7AM", e.message);
+    }catch(ne){ Logger.log("Error al notificar: "+ne.message); }
+  }
+}
+function verificarCambios(){ try{ actualizarYEnviarOrdenesCredito(false);}catch(e){ registrarError("Verificar Cambios","Error en ejecución", e.message); } }
+function verificarCambiosHorarioLaboral(){ const h=new Date().getHours(); if (h>=8 && h<18) verificarCambios(); }
+function enviarNotificacionError(tipo, mensaje){
+  try{
+    const cred=getCredenciales();
+    const params={"1":formatDate(new Date(),"dd/MM/yyyy HH:mm:ss"),"2":"Sistema","3":"ERROR SISTEMA","4":"Administrador","5":`❌ ${tipo}`,"6":mensaje.substring(0,100),"7":"3103149259"};
+    enviarNotificacionConReintentos(cred,"573182260739",false,params,"ERROR",tipo);
+  }catch(e){ Logger.log("Error enviando notificación de error: "+e.message); }
+}
+
+// ================== CONSULTAS A EPICOR (SQL) ==================
+function procesarOrdenesRetenidas(conn, sheets, mapRetenidas){
+  const q=`
+    SELECT d.OrderHed_OrderNum,
+           CONVERT(VARCHAR(10), d.OrderHed_OrderDate, 103) AS Fecha,
+           d.Zona,
+           d.Customer_Name,
+           d.ObservacionesRetencionCredito
+    FROM EpicorRepTran.dbo.udvPortalCustDtlOV d WITH (NOLOCK)
+    WHERE d.CreditoRetenido = 1
+      AND d.OrderHed_VoidOrder = 0
+      AND d.Zona != 'Comercial Agrosoil'
+      AND (d.CreditOverride IS NULL OR d.CreditOverride = 0)
+    ORDER BY d.OrderHed_OrderNum DESC`;
+  const s=conn.createStatement(), rs=s.executeQuery(q);
+  const filas=[], vistos=new Set();
+  while(rs.next()){
+    const orden=rs.getString("OrderHed_OrderNum");
+    if (vistos.has(orden)) continue; vistos.add(orden);
+    const datos={ zona: rs.getString("Zona"), cliente: rs.getString("Customer_Name"),
+      fecha: procesarFecha(rs.getString("Fecha")), observacion: (rs.getString("ObservacionesRetencionCredito")||"SIN OBSERVACIONES").toUpperCase() };
+    filas.push([datos.zona, datos.cliente, orden, datos.fecha, `${orden}: ${datos.observacion}`, "RETENIDA", "CRÉDITO"]);
+    mapRetenidas.set(orden, datos);
+  }
+  s.close();
+
+  // Plasmar SIEMPRE la lectura de Epicor
+  sheets.ordenes.clear();
+  sheets.ordenes.getRange(1,1,1,CONFIG.HOJAS.ordenes.headers.length).setValues([CONFIG.HOJAS.ordenes.headers]);
+  if (filas.length>0) sheets.ordenes.getRange(2,1,filas.length,CONFIG.HOJAS.ordenes.headers.length).setValues(filas);
+}
+function procesarOrdenesLiberadas(conn, sheets, mapLiberadas, controlData){
+  const q=`
+    SELECT d.OrderHed_OrderNum,
+           d.Zona,
+           d.Customer_Name,
+           CONVERT(VARCHAR(10), d.FechaLiberacionCredito, 103) AS Fecha,
+           CONVERT(VARCHAR(8), d.HoraLiberacionCredito, 108) AS Hora,
+           d.ObservacionesRetencionCredito
+    FROM EpicorRepTran.dbo.udvPortalCustDtlOV d WITH (NOLOCK)
+    JOIN EpicorRepTran.dbo.OrderHed oh WITH (NOLOCK)
+      ON d.OrderHed_OrderNum = oh.OrderNum AND d.OrderHed_Company = oh.Company
+    WHERE d.CreditoRetenido = 0
+      AND d.OrderHed_VoidOrder = 0
+      AND d.Zona != 'Comercial Agrosoil'
+      AND oh.CreditOverride = 1
+      AND d.FechaLiberacionCredito IS NOT NULL
+      AND d.FechaLiberacionCredito >= DATEADD(day, -1, GETDATE())
+    ORDER BY d.FechaLiberacionCredito DESC`;
+  const s=conn.createStatement(), rs=s.executeQuery(q);
+
+  const hoy = formatDate(new Date());
+  const controlEnviadasHoy = new Set();
+
+  const hojaControl = sheets.control;
+  if (hojaControl && hojaControl.getLastRow()>1){
+    const datos=hojaControl.getDataRange().getValues();
+    for (let i=1;i<datos.length;i++){
+      const [orden, estado, fechaEnvio,,, ,enviadoHoyLib]=datos[i];
+      if (estado==='LIBERADA' && fechaEnvio===hoy && enviadoHoyLib==="SI") controlEnviadasHoy.add(orden);
+    }
+  }
+  Object.keys(controlData).forEach(orden=>{
+    const c=controlData[orden];
+    if (c && c.estado==='LIBERADA' && c.fechaEnvio===hoy && c.enviadoHoyLiberada==="SI") controlEnviadasHoy.add(orden);
+  });
+
+  while(rs.next()){
+    const orden=rs.getString("OrderHed_OrderNum");
+    if (controlEnviadasHoy.has(orden)) continue;
+    const datos={ zona: rs.getString("Zona"), cliente: rs.getString("Customer_Name"),
+      fecha: procesarFecha(rs.getString("Fecha")||""), hora: rs.getString("Hora")||"",
+      observacion: (rs.getString("ObservacionesRetencionCredito")||"SIN OBSERVACIONES").toUpperCase()
+    };
+    mapLiberadas.set(orden, datos);
+  }
+  s.close();
+}
+
+// ================== DECISIÓN DE ENVÍOS ==================
+function prepararOrdenesParaEnvio(mapRetenidas, mapLiberadas, controlData, esReporteDiario){
+  const lista=[]; const hoy=formatDate(new Date());
+
+  // Retenidas
+  mapRetenidas.forEach((datos, orden)=>{
+    const c=controlData[orden];
+    let enviar=false, tipo='';
+    if (!c){ enviar=true; tipo='Nueva orden retenida'; }
+    else if (c.estado==='LIBERADA' && c.enviadoHoyRetenida==="NO"){ enviar=true; tipo='Orden volvió a retención'; }
+    else if (esReporteDiario && c.enviadoHoyRetenida==="NO"){
+      if (c.fechaEnvio!==hoy){ enviar=true; tipo='Reporte diario 7:00 AM'; }
+    }
+    if (enviar) lista.push({ orden, tipo, datos, esLiberada:false });
+  });
+
+  // Liberadas
+  mapLiberadas.forEach((datos, orden)=>{
+    const c=controlData[orden]; let enviar=false;
+    if (!c){ enviar=true; }
+    else if (c.estado==='RETENIDA' && c.enviadoHoyLiberada==="NO"){ enviar=true; }
+    else if (c.estado==='LIBERADA' && c.enviadoHoyLiberada==="NO" && c.fechaEnvio!==hoy){ enviar=true; }
+    if (enviar) lista.push({ orden, tipo:'Orden liberada', datos, esLiberada:true });
+  });
+
+  return lista;
+}
+
+// ================== NÚCLEO REUTILIZABLE (envío + registro) ==================
+function getContactoZona(zona){
+  const contactos=cargarContactosZonas();
+  const z=normalizarClaveZona(zona);
+  return {
+    telefono: "57"+(contactos.zonaANumero[z]||"3182260739"),
+    representante: contactos.zonaANombre[z] || "Representante sin asignar",
+    zonaClave: z
+  };
+}
+function buildTemplateParams(esLiberada, payload){
+  if (esLiberada){
+    return {
+      "1": payload.representanteCorto,
+      "2": payload.ordenesTexto,
+      "3": `${payload.fechaLiber||""} ${payload.horaLiber||""}`.trim(),
+      "4": payload.clienteNorm,
+      "5": payload.zonaNorm
+    };
+  }
+  return {
+    "1": payload.representanteCorto,
+    "2": payload.ordenesTexto,
+    "3": payload.fechaHoraAhora,
+    "4": payload.clienteNorm,
+    "5": payload.zonaNorm,
+    "6": payload.observacionNorm || ""
+  };
+}
+function resolveDestinatarios(telefonoPrincipal, zonaClave){
+  const props=PropertiesService.getScriptProperties();
+  const copiaActiva=props.getProperty('COPIA_ACTIVA')==='SI';
+  const numerosCopiaTexto=props.getProperty('NUMEROS_COPIA');
+  const zonasCopia=props.getProperty('ZONAS_COPIA');
+  const destinos=[telefonoPrincipal];
+  if (copiaActiva && numerosCopiaTexto){
+    const enZona=!zonasCopia || zonasCopia==='TODAS' ? true : new Set(zonasCopia.split(',').map(z=>z.trim())).has(zonaClave);
+    if (enZona){
+      numerosCopiaTexto.split(',').map(n=>n.trim()).filter(n=>n.length>=10).forEach(n=>destinos.push("57"+n));
+    }
+  }
+  return destinos;
+}
+function doSend(cred, telefono, esLiberada, params, etiqueta){
+  const payload={
+    chatPlatform:"whatsapp", chatChannelNumber:cred.API.channel, platformContactId:telefono,
+    ruleNameOrId: esLiberada? RULES.LIBERADA : RULES.RETENIDA,
+    params, clientPayload:`orden_${etiqueta}_${Date.now()}`
+  };
+  for (let i=0;i<3;i++){
+    try{
+      const r=UrlFetchApp.fetch(cred.API.url,{method:"post",contentType:"application/json",headers:{"access-token":cred.API.token},payload:JSON.stringify(payload),muteHttpExceptions:true});
+      if (httpSuccess(r)) return true;
+      Logger.log(`Intento ${i+1} fallido (${telefono}): ${r.getContentText()}`);
+    }catch(e){
+      Logger.log(`Error intento ${i+1} (${telefono}): ${e.message}`);
+      if (i===2) registrarError("Envío WhatsApp",`Fallo a ${telefono} después de 3 intentos`, e.message);
+    }
+    if (i<2) Utilities.sleep(800);
+  }
+  return false;
+}
+function logLiberacionesRow(orden, zonaNorm, clienteNorm, esLiberada, fechaLiber, horaLiber, representante, observacionNorm){
+  try{
+    const hoja=getSheet(CONFIG.HOJAS.logs.nombre, CONFIG.HOJAS.logs.headers);
+    hoja.appendRow([
+      orden, zonaNorm, clienteNorm,
+      esLiberada? (fechaLiber||"") : "", esLiberada? (horaLiber||"") : "",
+      Session.getActiveUser()?.getEmail?.() || "", representante,
+      observacionNorm || "", esLiberada? "LIBERADA" : "RETENIDA"
+    ]);
+  }catch(e){ registrarError("LogsLiberaciones","Error al registrar envío", e.message); }
+}
+function makeControlUpdate(orden, esLiberada, hoy, hora, tipo, ctl, cliente, zona){
+  return {
+    orden, estado: esLiberada? 'LIBERADA':'RETENIDA',
+    fechaEnvio:hoy, horaEnvio:hora, tipoNotificacion:tipo,
+    enviadoHoyRetenida: !esLiberada? "SI" : (ctl?.enviadoHoyRetenida || "NO"),
+    enviadoHoyLiberada: esLiberada? "SI" : (ctl?.enviadoHoyLiberada || "NO"),
+    cliente, zona, fila: ctl?.fila
+  };
+}
+function runNotificationFlow(groupItem, controlData, sheets, fechaHoy, horaActual, options){
+  const {cliente, zona, ordenes, datos, esLiberada, tipo}=groupItem;
+  const cred=getCredenciales();
+  const {telefono, representante, zonaClave}=getContactoZona(zona);
+  const telOverride = options?.phoneOverride || telefono;
+  const destinos=resolveDestinatarios(telOverride, zonaClave);
+  const representanteCorto=formatearNombreCorto(representante);
+  const clienteNorm=normalizarCliente(cliente); const zonaNorm=normalizarNombreZona(zona);
+  const observacionNorm=normalizarObservacion(datos.observacion); const fechaHoraAhora=formatDate(new Date(),"dd/MM/yyyy HH:mm:ss");
+  const ordenesTexto=ordenes.join(', ');
+  const params=buildTemplateParams(esLiberada,{
+    representanteCorto, ordenesTexto, fechaHoraAhora, clienteNorm, zonaNorm,
+    fechaLiber: procesarFecha(datos.fecha), horaLiber: datos.hora || "", observacionNorm, ordenUnico: ordenes[0]
+  });
+
+  Logger.log(`📤 Enviando ${esLiberada? 'LIBERACIÓN':'RETENCIÓN'}: ${ordenesTexto}`);
+  let alguno=false;
+  destinos.forEach((tel,i)=>{ if(i>0) Utilities.sleep(400); const et=(options?.etiqueta||tipo)+(i===0? "": `_copia${i}`);
+    const ok=doSend(cred,tel,esLiberada,params,`${ordenesTexto}_${et}`); alguno=alguno||ok; });
+  if (!alguno) return false;
+
+  const acts=[];
+  ordenes.forEach(orden=>{
+    const ctl=controlData[orden];
+    acts.push(makeControlUpdate(orden, esLiberada, fechaHoy, horaActual, tipo, ctl, cliente, zona));
+    logLiberacionesRow(orden, zonaNorm, clienteNorm, esLiberada, datos.fecha, datos.hora||"", representante, observacionNorm);
+  });
+  actualizarControlEnBatch(sheets.control, acts);
+  return true;
+}
+
+// ================== ENVÍO (usa el núcleo) ==================
+function enviarNotificaciones(ordenesParaEnviar, sheets, controlData, fechaHoy, horaActual, options){
+  if (ordenesParaEnviar.length===0) return;
+  const cred=getCredenciales();
+  if (!cred.API.url || !cred.API.token || !cred.API.channel){
+    const error='Faltan credenciales de API'; registrarError("API",error); showAlert('❌ Error', error); return;
+  }
+  // Agrupar por cliente/zona/tipo
+  const grupos={};
+  ordenesParaEnviar.forEach(({orden,tipo,datos,esLiberada})=>{
+    const key=`${datos.cliente}__${datos.zona}__${esLiberada?1:0}`;
+    if(!grupos[key]) grupos[key]={cliente:datos.cliente,zona:datos.zona,ordenes:[],datos,esLiberada,tipo};
+    grupos[key].ordenes.push(orden);
+  });
+  Object.values(grupos).forEach(g=>{
+    try{
+      const ok=runNotificationFlow(g, controlData, sheets, fechaHoy, horaActual, options);
+      if(!ok) Logger.log(`⚠️ No se pudo enviar grupo: ${g.ordenes.join(', ')}`);
+      Utilities.sleep(900);
+    }catch(e){ registrarError("Envios","Error enviando grupo", e.message); Logger.log('Error enviando grupo: '+e.message); }
+  });
+  aplicarFormatoCondicional(sheets.control);
+}
+
+// ================== CONTROL, FORMATO ==================
+function actualizarControlEnBatch(hojaControl, acts){
+  if (acts.length===0) return;
+  try{
+    const exist=[], nuevas=[];
+    acts.forEach(a=>{
+      const v=[a.orden,a.estado,a.fechaEnvio,a.horaEnvio,a.tipoNotificacion,a.enviadoHoyRetenida,a.enviadoHoyLiberada,a.cliente,a.zona];
+      if (a.fila) exist.push({fila:a.fila, valores:v}); else nuevas.push(v);
+    });
+    exist.forEach(({fila,valores})=> hojaControl.getRange(fila,1,1,9).setValues([valores]) );
+    if (nuevas.length>0){
+      const ultima=hojaControl.getLastRow(), max=hojaControl.getMaxRows();
+      if (ultima+nuevas.length > max-100){ Logger.log("⚠️ Limpiando ControlEnvios para hacer espacio..."); limpiarControlEnviosAntiguo(hojaControl); }
+      const u=hojaControl.getLastRow(); hojaControl.getRange(u+1,1,nuevas.length,9).setValues(nuevas);
+      Logger.log(`✅ Se agregaron ${nuevas.length} registros a ControlEnvios`);
+    }
+  }catch(e){ Logger.log('❌ Error en actualizarControlEnBatch: '+e.message); registrarError("Control Envíos","Error al actualizar control", e.message); }
+}
+function aplicarFormatoCondicional(hojaControl){
+  if (hojaControl.getLastRow()>1){
+    const rango=hojaControl.getRange(2,2,hojaControl.getLastRow()-1,1);
+    hojaControl.clearConditionalFormatRules();
+    const reglas=[
+      {estado:'RETENIDA',bg:'#ffcdd2',fg:'#c62828'},
+      {estado:'LIBERADA',bg:'#c8e6c9',fg:'#2e7d32'}
+    ].map(r=> SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo(r.estado).setBackground(r.bg).setFontColor(r.fg).setRanges([rango]).build());
+    hojaControl.setConditionalFormatRules(reglas); hojaControl.autoResizeColumns(1,9);
+  }
+}
+
+// ================== FLUJO PRINCIPAL (Epicor → Hojas → Notifs) ==================
+function actualizarYEnviarOrdenesCredito(esReporteDiario=true){
+  const lock=LockService.getScriptLock(); lock.waitLock(28000);
+  const inicio=new Date(); Logger.log(`Iniciando actualización - Reporte diario: ${esReporteDiario}`);
+  try{
+    const cred=getCredenciales();
+    if (!cred.DB.url || !cred.DB.user || !cred.DB.pass){ const e='Faltan credenciales de base de datos'; registrarError("Credenciales",e); showAlert('❌ Error', e); return; }
+
+    // Preparar hojas necesarias
+    const sheets={};
+    Object.entries(CONFIG.HOJAS).forEach(([k,cfg])=>{ if (k!=='contactos' && k!=='errores') sheets[k]=getSheet(cfg.nombre, cfg.headers); });
+
+    // Limpiezas antes del proceso (solo diario)
+    if (esReporteDiario){ Logger.log("🗑️ Limpiando historiales antiguos..."); limpiarHistorialAntiguo(sheets.logs); limpiarControlEnviosAntiguo(sheets.control); }
+
+    // Cargar memoria de control
+    const controlData={}, hoy=formatDate(new Date());
+    if (sheets.control.getLastRow()>1){
+      const rows=sheets.control.getDataRange().getValues();
+      for (let i=1;i<rows.length;i++){
+        const [orden,estado,fechaEnvio,horaEnvio,tipo,enviadoRet,enviadoLib,cliente,zona]=rows[i];
+        controlData[orden]={ estado, fechaEnvio, horaEnvio, tipoNotificacion:tipo,
+          enviadoHoyRetenida: (fechaEnvio===hoy)? enviadoRet : "NO",
+          enviadoHoyLiberada: (fechaEnvio===hoy)? enviadoLib : "NO",
+          cliente, zona, fila:i+1 };
+      }
+    }
+
+    // ======== 1) CONSULTAR EPICOR =========
+    let conn;
+    const mapRetenidas=new Map(), mapLiberadas=new Map();
+    try{
+      conn=Jdbc.getConnection(cred.DB.url, cred.DB.user, cred.DB.pass);
+      // RELLENAR HOJA OrdenesRetenidas SIEMPRE según Epicor
+      procesarOrdenesRetenidas(conn, sheets, mapRetenidas);
+      procesarOrdenesLiberadas(conn, sheets, mapLiberadas, controlData);
+    }catch(e){
+      Logger.log(`ERROR Epicor: ${e.message}`); registrarError("Epicor", "Error consultando Epicor", e.message); throw e;
+    }finally{ if (conn) conn.close(); }
+
+    // ======== 2) DECIDIR Y ENVIAR =========
+    const aEnviar = prepararOrdenesParaEnvio(mapRetenidas, mapLiberadas, controlData, esReporteDiario);
+    Logger.log(`Órdenes a enviar: ${aEnviar.length}`); if (esReporteDiario) aEnviar.forEach(o=>Logger.log(`- ${o.orden}: ${o.tipo}`));
+
+    enviarNotificaciones(aEnviar, sheets, controlData, hoy, formatDate(new Date(),"HH:mm:ss"));
+
+    const dur=(new Date()-inicio)/1000;
+    Logger.log(`Ejecución completada en ${dur} segundos`);
+    if (esReporteDiario) registrarError("Reporte Diario","Completado exitosamente", `Órdenes procesadas: ${aEnviar.length}, Duración: ${dur}s`);
+
+  }catch(e){
+    Logger.log(`ERROR GENERAL: ${e.message}`);
+    registrarError("Sistema","Error general en actualizarYEnviarOrdenesCredito", e.message);
+    throw e;
+  }finally{ try{ lock.releaseLock(); }catch(_){ } }
+}
+
+// ================== COPIAS / CONFIG MENOR ==================
+function configurarCopiasReportes(){
+  const ui=SpreadsheetApp.getUi(), props=PropertiesService.getScriptProperties();
+  const activa=props.getProperty('COPIA_ACTIVA')==='SI', nums=props.getProperty('NUMEROS_COPIA')||'', zonas=props.getProperty('ZONAS_COPIA')||'';
+  const arr=nums? nums.split(','):[]; let msg=`📊 ESTADO ACTUAL:\nEstado: ${activa?'✅ ACTIVO':'❌ INACTIVO'}\n\n`;
+  if (arr.length>0){ msg+=`📱 Números configurados: ${arr.length}\n`; arr.forEach((n,i)=> msg+=`   ${i+1}. ${n.trim()}\n`); }
+  else msg+='📱 Números: Ninguno configurado\n';
+  msg+=`\n🌎 Zonas: ${zonas||'TODAS'}\n\nYES = Configurar/Actualizar\nNO = Desactivar copias`;
+  const op=ui.alert('📱 Gestión de Copias', msg, ui.ButtonSet.YES_NO_CANCEL);
+  if (op===ui.Button.CANCEL) return;
+  if (op===ui.Button.NO){ props.setProperty('COPIA_ACTIVA','NO'); showAlert('✅ Copias Desactivadas','Se mantienen números guardados.'); return; }
+
+  const rn=ui.prompt('📱 Configurar Números de WhatsApp','Ingresa números separados por comas (máx 10)\nEj: 3182260739,3001234567', ui.ButtonSet.OK_CANCEL);
+  if (rn.getSelectedButton()!==ui.Button.OK) return;
+  const texto=rn.getResponseText().trim(); if (!texto){ showAlert('❌ Error','Debes ingresar al menos un número'); return; }
+  const val=texto.split(',').map(n=>n.trim().replace(/\D/g,'')).filter(n=>n.length>=10); if (val.length===0){ showAlert('❌ Error','No se encontraron números válidos'); return; }
+  if (val.length>10){ showAlert('⚠️ Advertencia','Se tomarán los primeros 10'); val.splice(10); }
+
+  const contactos=cargarContactosZonas(); const zonasDisp=Object.keys(contactos.zonaANumero).sort();
+  const tipoSel=ui.alert('🌎 Selección de Zonas','YES = Todas las zonas\nNO = Seleccionar zonas específicas', ui.ButtonSet.YES_NO_CANCEL);
+  if (tipoSel===ui.Button.CANCEL) return;
+  const seleccion = tipoSel===ui.Button.YES ? 'TODAS' : seleccionarZonasManual(zonasDisp).join(',');
+  if (seleccion.length===0 && tipoSel!==ui.Button.YES) return;
+
+  props.setProperty('COPIA_ACTIVA','SI'); props.setProperty('NUMEROS_COPIA', val.join(',')); props.setProperty('ZONAS_COPIA', seleccion);
+  let conf='✅ COPIAS CONFIGURADAS\n\n📱 Números registrados: '+val.length+'\n'; val.forEach((n,i)=> conf+=`   ${i+1}. ${n}\n`);
+  conf+=`\n🌎 Zonas: ${seleccion==='TODAS'?'TODAS': (seleccion.split(',').length+' seleccionadas')}`;
+  showAlert('✅ Configuración Guardada', conf+'\n\n✉️ Se replicará a todos los números configurados.');
+}
+function seleccionarZonasManual(zonas){
+  const ui=SpreadsheetApp.getUi();
+  const msg=zonas.map((z,i)=>`${i+1}. ${z}`).join('\n')+'\n\nIngresa números (1,3,5-8)';
+  const r=ui.prompt('🌎 Selección de Zonas', msg, ui.ButtonSet.OK_CANCEL);
+  if (r.getSelectedButton()!==ui.Button.OK) return [];
+  const sel=r.getResponseText().trim().toUpperCase(); if (sel==='TODAS') return zonas; if (!sel) return [];
+  const out=[], partes=sel.split(',');
+  partes.forEach(p=>{
+    p=p.trim();
+    if (p.includes('-')){ const [a,b]=p.split('-').map(n=>parseInt(n)); if (!isNaN(a)&&!isNaN(b)) for(let i=a;i<=b&&i<=zonas.length;i++) zonas[i-1]&&out.push(zonas[i-1]); }
+    else{ const n=parseInt(p); if (!isNaN(n) && zonas[n-1]) out.push(zonas[n-1]); }
+  });
+  return [...new Set(out)];
+}
+function verConfiguracionCopias(){
+  const props=PropertiesService.getScriptProperties();
+  const activa=props.getProperty('COPIA_ACTIVA')==='SI', nums=props.getProperty('NUMEROS_COPIA')||'', zonas=props.getProperty('ZONAS_COPIA')||'';
+  let m='📋 CONFIGURACIÓN ACTUAL DE COPIAS\n\nEstado: '+(activa?'✅ ACTIVO':'❌ INACTIVO')+'\n\n';
+  if (nums){ const arr=nums.split(',').map(n=>n.trim()).filter(n=>n.length>0); m+=`📱 Números configurados: ${arr.length}\n\n`; arr.forEach((n,i)=> m+=`   ${i+1}. ${n}\n`); }
+  else m+='📱 Números: Ninguno configurado\n';
+  m+='\n🌎 Zonas activas:\n';
+  if (zonas && zonas!=='TODAS'){ const z=zonas.split(',').map(s=>s.trim()).filter(Boolean); m+=`   Total: ${z.length} zonas\n\n`; z.slice(0,5).forEach((zz,i)=> m+=`   ${i+1}. ${zz}\n`); if (z.length>5) m+=`   ... y ${z.length-5} más`; }
+  else m+='   TODAS LAS ZONAS';
+  if (activa && nums){ const c=nums.split(',').filter(n=>n.trim().length>0).length; m+=`\n\n✉️ Se replica a ${c} número${c>1?'s':''}.`; }
+  showAlert('📋 Configuración de Copias', m);
+}
+
+// ================== ESTADÍSTICAS / DIAGNÓSTICO ==================
+function verEstadisticas(){
+  const hojaCtrl=getSheet(CONFIG.HOJAS.control.nombre,null,false);
+  if (!hojaCtrl || hojaCtrl.getLastRow()<=1){ showAlert('📊 Estadísticas','No hay datos disponibles'); return; }
+  const rows=hojaCtrl.getDataRange().getValues().slice(1), hoy=formatDate(new Date()), pruebas=['PRUEBA','TEST','TESTING','DEMO'];
+  const st=rows.reduce((a,row)=>{
+    const [orden, estado, fechaEnvio,, tipo, envRet, envLib]=row;
+    const esPr = pruebas.some(p=> String(orden).toUpperCase().includes(p)|| String(tipo).toUpperCase().includes(p));
+    if (esPr) a.pruebasTotal++; else{
+      a.total++; if (estado==='RETENIDA') a.retenidas++; if (estado==='LIBERADA') a.liberadas++;
+      if (fechaEnvio===hoy && envRet==="SI") a.enviadasHoyRetenida++; if (fechaEnvio===hoy && envLib==="SI") a.enviadasHoyLiberada++;
+    } return a;
+  },{total:0,retenidas:0,liberadas:0,enviadasHoyRetenida:0,enviadasHoyLiberada:0,pruebasTotal:0});
+  const hojaOrd=getSheet(CONFIG.HOJAS.ordenes.nombre,null,false);
+  const hojaLogs=getSheet(CONFIG.HOJAS.logs.nombre,null,false);
+  const hojaErr=getSheet(CONFIG.HOJAS.errores.nombre,null,false);
+  const retenidasAct=hojaOrd? Math.max(0, hojaOrd.getLastRow()-1):0;
+  const liberadasHist=hojaLogs? new Set(hojaLogs.getDataRange().getValues().slice(1).filter(r=>r[0]&&!String(r[0]).includes('←')).map(r=>r[0])).size : 0;
+  const errRec=(hojaErr && hojaErr.getLastRow()>1)? hojaErr.getRange(Math.max(2, hojaErr.getLastRow()-9),1, Math.min(10, hojaErr.getLastRow()-1),5).getValues():[];
+  let msgErr=''; if (errRec.length>0) msgErr='\n\nÚLTIMOS ERRORES:\n'+errRec.slice(-3).map(e=>`${e[0]} ${e[1]} - ${e[2]}`).join('\n');
+  showAlert('📊 ESTADÍSTICAS DEL SISTEMA',
+    `Órdenes retenidas actuales: ${retenidasAct}\n`+
+    `Órdenes liberadas (histórico últimos ${CONFIG.MESES_HISTORIAL} meses): ${liberadasHist}\n\n`+
+    `Total notificaciones: ${st.total}\n├─ Retenidas: ${st.retenidas}\n└─ Liberadas: ${st.liberadas}\n\n`+
+    `HOY (${hoy}):\nRetenciones notificadas: ${st.enviadasHoyRetenida}\nLiberaciones notificadas: ${st.enviadasHoyLiberada}\n\n`+
+    `Pruebas realizadas: ${st.pruebasTotal}`+msgErr);
+}
+function verLogErrores(){
+  const hoja=getSheet(CONFIG.HOJAS.errores.nombre,null,false);
+  if (!hoja || hoja.getLastRow()<=1){ showAlert('📋 Log de Errores','No hay errores registrados'); return; }
+  const ult=Math.min(20, hoja.getLastRow()-1);
+  const err=hoja.getRange(Math.max(2, hoja.getLastRow()-ult+1),1,ult,5).getValues();
+  const msg = err.reverse().slice(0,10).map(e=>`${e[0]} ${e[1]} - ${e[2]}: ${e[3].substring(0,50)}${e[3].length>50?'...':''}`).join('\n');
+  showAlert('📋 Últimos Errores', msg);
+}
+function limpiarLogErrores(){
+  const ui=SpreadsheetApp.getUi();
+  if (ui.alert('🗑️ Limpiar Log de Errores','¿Seguro?', ui.ButtonSet.YES_NO)===ui.Button.YES){
+    const hoja=getSheet(CONFIG.HOJAS.errores.nombre, CONFIG.HOJAS.errores.headers);
+    if (hoja.getLastRow()>1) hoja.deleteRows(2, hoja.getLastRow()-1);
+    showAlert('✅ Log Limpiado','Se eliminaron todos los registros de error');
+  }
+}
+function verificarHorarioActual(){
+  const ahora=new Date(), zona=Session.getScriptTimeZone(), zonaHoja=SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
+  const horaLocal=formatDate(ahora,"HH:mm:ss"), fechaCompleta=formatDate(ahora,"dd/MM/yyyy HH:mm:ss");
+  let adv=''; if (zona!==zonaHoja) adv='\n\n⚠️ ADVERTENCIA: La zona del script y la hoja son diferentes.';
+  let ult='\n📊 Último reporte: No encontrado';
+  const hoja=getSheet(CONFIG.HOJAS.errores.nombre,null,false);
+  if (hoja && hoja.getLastRow()>1){
+    const d=hoja.getDataRange().getValues();
+    for (let i=d.length-1;i>=1;i--){ if (d[i][2]==='Reporte Diario'){ ult = `\n📊 Último reporte: ${d[i][0]} ${d[i][1]} - ${d[i][3]}`; break; } }
+  }
+  showAlert('🕐 Horario Actual del Sistema', `🌎 Zona Script: ${zona}\n📄 Zona Hoja: ${zonaHoja}\n\n⏰ Hora: ${horaLocal}\n📅 Fecha: ${fechaCompleta}\n${ult}${adv}`);
+}
+
+// ================== LIMPIEZAS MANUALES ==================
+function limpiarHistorialManual(){
+  const ui=SpreadsheetApp.getUi(), hoja=getSheet(CONFIG.HOJAS.logs.nombre,null,false);
+  if (!hoja || hoja.getLastRow()<=1){ showAlert('ℹ️ Sin Historial','No hay registros para limpiar'); return; }
+  const total=hoja.getLastRow()-1;
+  if (ui.alert('🗑️ Limpiar Historial de Liberaciones', `Eliminará registros anteriores a ${CONFIG.MESES_HISTORIAL} meses.\n\nTotal actuales: ${total}\n\n¿Continuar?`, ui.ButtonSet.YES_NO)===ui.Button.YES){
+    try{ limpiarHistorialAntiguo(hoja); const rest=hoja.getLastRow()-1; showAlert('✅ Limpieza Completada', `Eliminados: ${total-rest}\nConservados: ${rest}\n(Se mantienen ${CONFIG.MESES_HISTORIAL} meses)`); }
+    catch(e){ showAlert('❌ Error','Error al limpiar historial: '+e.message); }
+  }
+}
+
+// ================== PRUEBAS (usan el mismo flujo) ==================
+function probarSistemaCompleto(){
+  const ui=SpreadsheetApp.getUi();
+  if (ui.alert('🧪 Prueba del Sistema','Se verificará todo el sistema. ¿Continuar?', ui.ButtonSet.YES_NO)!==ui.Button.YES) return;
+  const res={credenciales:'⏳',baseDatos:'⏳',hojas:'⏳',contactos:'⏳',queries:'⏳',notificacion:'⏳',zonaHoraria:'⏳'};
+  try{ const z=Session.getScriptTimeZone(); res.zonaHoraria = z==='America/Bogota'? '✅': `⚠️ ${z}`; }catch(e){ res.zonaHoraria='❌'; }
+  try{ const c=getCredenciales(); res.credenciales = (!c.DB.url||!c.DB.user||!c.DB.pass||!c.API.url||!c.API.token||!c.API.channel)? '❌':'✅'; }catch(e){ res.credenciales='❌'; }
+  if (res.credenciales==='✅'){
+    try{ const c=getCredenciales(); const conn=Jdbc.getConnection(c.DB.url,c.DB.user,c.DB.pass); const st=conn.createStatement(); st.executeQuery("SELECT 1"); st.close(); conn.close(); res.baseDatos='✅'; }catch(e){ res.baseDatos='❌'; }
+  }
+  try{ Object.values(CONFIG.HOJAS).forEach(cfg=> getSheet(cfg.nombre, cfg.headers)); res.hojas='✅'; }catch(e){ res.hojas='❌'; }
+  try{ const cont=cargarContactosZonas(); res.contactos=Object.keys(cont.zonaANumero).length>0? '✅':'❌'; }catch(e){ res.contactos='❌'; }
+  res.queries = res.baseDatos==='✅'? '✅':'⚠️';
+  if (ui.alert('Prueba de Notificación','¿Enviar notificación de prueba?', ui.ButtonSet.YES_NO)===ui.Button.YES && res.credenciales==='✅'){
+    try{
+      const cred=getCredenciales();
+      const ok=enviarNotificacionConReintentos(cred,"573182260739",false,{
+        "1":formatDate(new Date(),"dd/MM/yyyy HH:mm:ss"),
+        "2":"Sistema","3":"Zona Prueba","4":"Cliente Prueba","5":"🧪 PRUEBA DEL SISTEMA","6":"TEST SISTEMA","7":"3103149259"
+      },'TEST','prueba_sistema');
+      res.notificacion=ok?'✅':'❌';
+    }catch(e){ res.notificacion='❌'; }
+  }else res.notificacion='⏭️';
+  const ok=Object.values(res).filter(r=>r==='✅').length, er=Object.values(res).filter(r=>r==='❌').length, adv=Object.values(res).filter(r=>r.includes('⚠️')).length;
+  showAlert('🧪 Resultado de la Prueba',
+    `RESUMEN: ${ok} OK, ${er} ERROR, ${adv} ADVERTENCIAS\n\n`+
+    `Zona horaria: ${res.zonaHoraria}\nCredenciales: ${res.credenciales}\nBase de datos: ${res.baseDatos}\nHojas: ${res.hojas}\nContactos: ${res.contactos}\nQueries: ${res.queries}\nNotificación: ${res.notificacion}\n\n`+
+    (er>0||adv>0?'⚠️ Revisar componentes con error/advertencia':'✅ SISTEMA FUNCIONANDO CORRECTAMENTE'));
+}
+function ejecutarPrueba(nombrePrueba, esLiberada=false){
+  const ui=SpreadsheetApp.getUi();
+  const resp=ui.prompt(`Prueba de ${esLiberada?'Liberación':'Retención'}`, 'Ingresa el número de orden:', ui.ButtonSet.OK_CANCEL);
+  if (resp.getSelectedButton()!==ui.Button.OK) return;
+  const ordenNum=resp.getResponseText().trim(); if (!ordenNum){ showAlert('Error','Debes ingresar un número de orden'); return; }
+
+  const hojaName=esLiberada? CONFIG.HOJAS.logs.nombre : CONFIG.HOJAS.ordenes.nombre;
+  const hoja=getSheet(hojaName,null,false); if (!hoja){ showAlert('Error','No hay datos disponibles'); return; }
+  const datos=hoja.getDataRange().getValues(); const col=esLiberada? 0 : 2; let found=null;
+  for (let i=1;i<datos.length;i++){
+    if (String(datos[i][col])===ordenNum){
+      found={ zona: datos[i][esLiberada?1:0], cliente: datos[i][esLiberada?2:1], orden: ordenNum, fecha: datos[i][3], observacion: esLiberada? datos[i][7] : String(datos[i][4]).replace(`${ordenNum}: `,'') };
+      break;
+    }
+  }
+  if (!found){ showAlert('Error',`No se encontró la orden ${ordenNum}`); return; }
+  if (ui.alert('Confirmar Prueba', `${nombrePrueba}\n\nOrden: ${ordenNum}\nCliente: ${found.cliente}\nZona: ${found.zona}`, ui.ButtonSet.YES_NO)!==ui.Button.YES) return;
+
+  const item={ orden: ordenNum, tipo: `${nombrePrueba} (PRUEBA)`, datos:{zona:found.zona, cliente:found.cliente, fecha:found.fecha, hora:"", observacion:found.observacion}, esLiberada };
+  const sheets={ control: getSheet(CONFIG.HOJAS.control.nombre, CONFIG.HOJAS.control.headers) };
+  enviarNotificaciones([item], sheets, {}, formatDate(new Date()), formatDate(new Date(),"HH:mm:ss"), { etiqueta:'prueba_ui' });
+  showAlert('✅ Prueba Enviada', `Se envió la notificación para la orden ${ordenNum}`);
+}
+const probarNotificacionOrdenRetenida=()=>ejecutarPrueba('Orden Retenida', false);
+const probarNotificacionOrdenLiberada=()=>ejecutarPrueba('Orden Liberada', true);
+
+function probarNotificacionRetenidaPersonalizada(){
+  const ordenNum='TEST-'+Date.now();
+  const item={ orden: ordenNum, tipo:'Retención Personalizada (PRUEBA)', datos:{ zona:'Zona de Prueba', cliente:'Cliente de Prueba', fecha:new Date(), hora:"", observacion:'PRUEBA DEL SISTEMA' }, esLiberada:false };
+  const sheets={ control: getSheet(CONFIG.HOJAS.control.nombre, CONFIG.HOJAS.control.headers) };
+  enviarNotificaciones([item], sheets, {}, formatDate(new Date()), formatDate(new Date(),"HH:mm:ss"), { etiqueta:'prueba_rapida' });
+  showAlert('✅ Prueba Personalizada','Notificación de prueba enviada');
+}
+
+function pruebaNotificacionPersonalizada(){
+  const ui=SpreadsheetApp.getUi();
+  const t=ui.alert('🧪 Prueba Personalizada','Selecciona:\nYES = Orden Retenida\nNO = Orden Liberada', ui.ButtonSet.YES_NO_CANCEL);
+  if (t===ui.Button.CANCEL) return; const esLiberada = (t===ui.Button.NO);
+  const rNum=ui.prompt('📱 Número de Prueba','Ingresa el número (sin 57):', ui.ButtonSet.OK_CANCEL); if (rNum.getSelectedButton()!==ui.Button.OK) return;
+  const numero=rNum.getResponseText().trim().replace(/\D/g,''); if (!numero || numero.length<10){ showAlert('❌ Error','Número inválido'); return; }
+  const rOrd=ui.prompt('📋 Número de Orden','Ingresa el número de orden:', ui.ButtonSet.OK_CANCEL); if (rOrd.getSelectedButton()!==ui.Button.OK) return;
+  const ordenNum=rOrd.getResponseText().trim(); if (!ordenNum){ showAlert('❌ Error','Debes ingresar un número de orden'); return; }
+
+  showAlert('⏳ Buscando...','Obteniendo datos de la orden...');
+  let datosOrden=null;
+  try{
+    const cred=getCredenciales(); const conn=Jdbc.getConnection(cred.DB.url, cred.DB.user, cred.DB.pass);
+    if (esLiberada){
+      const q=`SELECT TOP 1 d.OrderHed_OrderNum,d.Zona,d.Customer_Name,CONVERT(VARCHAR(10),d.FechaLiberacionCredito,103) AS Fecha,CONVERT(VARCHAR(8),d.HoraLiberacionCredito,108) AS Hora,d.ObservacionesRetencionCredito
+               FROM EpicorRepTran.dbo.udvPortalCustDtlOV d WITH (NOLOCK)
+               JOIN EpicorRepTran.dbo.OrderHed oh WITH (NOLOCK) ON d.OrderHed_OrderNum=oh.OrderNum AND d.OrderHed_Company=oh.Company
+               WHERE d.OrderHed_OrderNum='${ordenNum}' AND d.CreditoRetenido=0 AND d.OrderHed_VoidOrder=0 AND oh.CreditOverride=1`;
+      const st=conn.createStatement(), rs=st.executeQuery(q);
+      if (rs.next()){
+        datosOrden={ orden: rs.getString("OrderHed_OrderNum"), zona: rs.getString("Zona"), cliente: rs.getString("Customer_Name"),
+          fecha: procesarFecha(rs.getString("Fecha")||""), hora: rs.getString("Hora")||"", observacion: (rs.getString("ObservacionesRetencionCredito")||"SIN OBSERVACIONES").toUpperCase() };
+      }
+      st.close();
+    }else{
+      const q=`SELECT TOP 1 d.OrderHed_OrderNum,CONVERT(VARCHAR(10),d.OrderHed_OrderDate,103) AS Fecha,d.Zona,d.Customer_Name,d.ObservacionesRetencionCredito
+               FROM EpicorRepTran.dbo.udvPortalCustDtlOV d WITH (NOLOCK)
+               WHERE d.OrderHed_OrderNum='${ordenNum}' AND d.CreditoRetenido=1 AND d.OrderHed_VoidOrder=0 AND (d.CreditOverride IS NULL OR d.CreditOverride=0)`;
+      const st=conn.createStatement(), rs=st.executeQuery(q);
+      if (rs.next()){
+        datosOrden={ orden: rs.getString("OrderHed_OrderNum"), zona: rs.getString("Zona"), cliente: rs.getString("Customer_Name"),
+          fecha: procesarFecha(rs.getString("Fecha")), hora:"", observacion: (rs.getString("ObservacionesRetencionCredito")||"SIN OBSERVACIONES").toUpperCase() };
+      }
+      st.close();
+    }
+    conn.close();
+  }catch(e){ showAlert('❌ Error BD','Error al consultar: '+e.message); registrarError("Prueba Personalizada","Error consultando BD", e.message); return; }
+
+  if (!datosOrden){ showAlert('❌ No Encontrada', `No se encontró la orden ${ordenNum} como ${esLiberada?'LIBERADA':'RETENIDA'}`); return; }
+
+  const contactos=cargarContactosZonas(); const representante = contactos.zonaANombre[normalizarClaveZona(datosOrden.zona)] || "Representante sin asignar";
+  const resumen = esLiberada
+    ? `🎯 PRUEBA DE LIBERACIÓN\n\n📱 Enviar a: ${numero}\n👤 Representante: ${representante}\n📍 Zona: ${datosOrden.zona}\n🏢 Cliente: ${datosOrden.cliente}\n📋 Orden: ${datosOrden.orden}\n📅 Fecha: ${datosOrden.fecha} ${datosOrden.hora||''}\n\n¿Enviar prueba?`
+    : `🎯 PRUEBA DE RETENCIÓN\n\n📱 Enviar a: ${numero}\n👤 Representante: ${representante}\n📍 Zona: ${datosOrden.zona}\n🏢 Cliente: ${datosOrden.cliente}\n📋 Orden: ${datosOrden.orden}\n📝 Observación: ${datosOrden.observacion}\n\n¿Enviar prueba?`;
+  if (ui.alert('✅ Confirmar Envío', resumen, ui.ButtonSet.YES_NO)!==ui.Button.YES) return;
+
+  // usar flujo de producción con override
+  const item={ orden: datosOrden.orden, tipo:'prueba_personalizada', datos:{ zona:datosOrden.zona, cliente:datosOrden.cliente, fecha:datosOrden.fecha, hora:datosOrden.hora||"", observacion:datosOrden.observacion }, esLiberada };
+  const sheets={ control: getSheet(CONFIG.HOJAS.control.nombre, CONFIG.HOJAS.control.headers) };
+  enviarNotificaciones([item], sheets, {}, formatDate(new Date()), formatDate(new Date(),"HH:mm:ss"), { phoneOverride:"57"+numero, etiqueta:'prueba_personalizada' });
+  showAlert('✅ Prueba Enviada', `Notificación enviada a ${numero}`);
+}
+
+// ================== ENVÍO BÁSICO (fallback usado en tests del sistema) ==================
+function enviarNotificacionConReintentos(cred, telefono, esLiberada, params, orden, tipo){
+  for (let intento=0; intento<3; intento++){
+    try{
+      const payload={ chatPlatform:"whatsapp", chatChannelNumber:cred.API.channel, platformContactId:telefono,
+        ruleNameOrId: esLiberada? RULES.LIBERADA: RULES.RETENIDA, params, clientPayload:`orden_${tipo}_${orden}_${Date.now()}` };
+      const resp=UrlFetchApp.fetch(cred.API.url,{method:"post",contentType:"application/json",headers:{"access-token":cred.API.token},payload:JSON.stringify(payload),muteHttpExceptions:true});
+      if (httpSuccess(resp)) return true;
+      Logger.log(`Intento ${intento+1} fallido para orden ${orden}: ${resp.getContentText()}`);
+    }catch(e){
+      Logger.log(`Error en intento ${intento+1} enviando orden ${orden}: ${e.message}`);
+      if (intento===2) registrarError("Envío WhatsApp",`Fallo orden ${orden} después de 3 intentos`, e.message);
+    }
+    if (intento<2) Utilities.sleep(2000);
+  }
+  return false;
+}
+
+// ================== MENÚ ==================
+function onOpen(){
+  SpreadsheetApp.getUi()
+    .createMenu('🔧 Sistema de Órdenes')
+    .addSubMenu(SpreadsheetApp.getUi().createMenu('🔐 Seguridad')
+      .addItem('👁️ Ver Credenciales Guardadas','verPropiedadesGuardadas')
+      .addItem('✏️ Actualizar Credencial','actualizarCredencial')
+      .addItem('🗑️ Eliminar Credencial','eliminarCredencial'))
+    .addSeparator()
+    .addSubMenu(SpreadsheetApp.getUi().createMenu('⚙️ Configurar Triggers')
+      .addItem('🚀 Configuración Completa','configurarTriggerCompleto')
+      .addItem('⚡ Prueba Rápida (minutos)','configurarPruebaRapida')
+      .addItem('🕐 Solo 24 horas','configurarTriggersDiarios')
+      .addItem('🏢 Solo Horario Laboral','configurarTriggersHorarioLaboral')
+      .addItem('📅 Ver Triggers Activos','verTriggersActivos')
+      .addItem('🛑 Detener Triggers','detenerTriggers'))
+    .addItem('📊 Ver Estadísticas','verEstadisticas')
+    .addSubMenu(SpreadsheetApp.getUi().createMenu('📨 Copias de Reportes')
+      .addItem('⚙️ Configurar/Desactivar','configurarCopiasReportes')
+      .addItem('👁️ Ver Configuración','verConfiguracionCopias'))
+    .addSubMenu(SpreadsheetApp.getUi().createMenu('🔍 Diagnóstico')
+      .addItem('🕐 Verificar Horario Actual','verificarHorarioActual')
+      .addItem('📋 Ver Log de Errores','verLogErrores')
+      .addItem('🗑️ Limpiar Log de Errores','limpiarLogErrores')
+      .addItem('🗂️ Limpiar Historial Antiguo','limpiarHistorialManual'))
+    .addSeparator()
+    .addSubMenu(SpreadsheetApp.getUi().createMenu('🧪 Pruebas')
+      .addItem('🔬 Probar Sistema Completo','probarSistemaCompleto')
+      .addItem('🎯 Prueba a Número Específico','pruebaNotificacionPersonalizada')
+      .addItem('📋 Probar Retención','probarNotificacionOrdenRetenida')
+      .addItem('✅ Probar Liberación','probarNotificacionOrdenLiberada')
+      .addItem('✏️ Prueba Rápida','probarNotificacionRetenidaPersonalizada'))
+    .addSeparator()
+    .addItem('🔄 Ejecutar Reporte Ahora','reporteDiario')
+    .addItem('🔍 Verificar Cambios Ahora','verificarCambios')
+    .addToUi();
+}
+
+// ================== TRIGGER COMPLETO (ASISTENTE PASO A PASO) ==================
+function configurarTriggerCompleto() {
+  const ui = SpreadsheetApp.getUi();
+
+  // Paso 1: Diario vs Prueba única
+  const opcionTiempo = ui.alert(
+    '⏰ Configuración de Tiempo',
+    'Selecciona el tipo de configuración:\n\n' +
+    'YES = Configurar reporte diario (hora u hora:minutos)\n' +
+    'NO = Configurar para prueba única (se ejecuta en X minutos)',
+    ui.ButtonSet.YES_NO_CANCEL
+  );
+  if (opcionTiempo === ui.Button.CANCEL) return;
+
+  // Paso 2: 24h vs Laboral
+  const tipoVerificacion = ui.alert(
+    '🔄 Tipo de Verificación',
+    'YES = 24 horas\n' +
+    'NO = Solo horario laboral (8 AM - 6 PM)',
+    ui.ButtonSet.YES_NO_CANCEL
+  );
+  if (tipoVerificacion === ui.Button.CANCEL) return;
+
+  // Paso 3: Intervalo de verificación
+  const respIntervalo = ui.prompt(
+    '⏱️ Intervalo de Verificación',
+    'Cada cuántos minutos debe verificar cambios:\n\n' +
+    '• Mínimo: 1 minuto\n' +
+    '• Máximo: 30 minutos\n' +
+    '• Recomendado: 5 minutos\n\n' +
+    'Ingresa el número de minutos:',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (respIntervalo.getSelectedButton() !== ui.Button.OK) return;
+
+  const minutos = parseInt(respIntervalo.getResponseText().trim(), 10);
+  if (isNaN(minutos) || minutos < 1 || minutos > 30) {
+    showAlert('❌ Error', 'El intervalo debe ser entre 1 y 30 minutos');
+    return;
+  }
+
+  configuracionInicial();
+
+  try {
+    // Limpiar triggers previos
+    ScriptApp.getProjectTriggers().forEach(t => ScriptApp.deleteTrigger(t));
+
+    if (opcionTiempo === ui.Button.YES) {
+      // Reporte diario
+      const respHora = ui.prompt(
+        '⏰ Hora del Reporte Diario',
+        'Ingresa la hora en uno de estos formatos:' +
+        '\n• Solo hora: 7 (para 7:00)' +
+        '\n• Hora y minutos: 7:30 o 7-30' +
+        '\n• Formato 24h: 15:45 o 15-45',
+        ui.ButtonSet.OK_CANCEL
+      );
+      if (respHora.getSelectedButton() !== ui.Button.OK) return;
+
+      const tiempo = (respHora.getResponseText() || '').trim();
+      if (!tiempo) { showAlert('❌ Error','Debe ingresar un horario'); return; }
+
+      let h, m = 0;
+      if (tiempo.includes(':') || tiempo.includes('-')) {
+        const p = tiempo.split(/[:-]/).map(x => parseInt(x.trim(), 10));
+        h = p[0]; m = p[1] || 0;
+      } else {
+        h = parseInt(tiempo, 10);
+      }
+      if (isNaN(h) || h < 0 || h > 23 || isNaN(m) || m < 0 || m > 59) {
+        showAlert('❌ Error', 'Horario inválido. Hora debe ser 0-23 y minutos 0-59');
+        return;
+      }
+
+      // Próxima ejecución
+      const fechaBase = new Date();
+      fechaBase.setHours(h); fechaBase.setMinutes(m); fechaBase.setSeconds(0);
+      const ahora = new Date();
+      if (fechaBase <= ahora) fechaBase.setDate(fechaBase.getDate() + 1);
+
+      // Trigger diario
+      ScriptApp.newTrigger('reporteDiarioConManejo')
+        .timeBased()
+        .atHour(h)
+        .nearMinute(m)
+        .everyDays(1)
+        .inTimezone("America/Bogota")
+        .create();
+
+      // Trigger de verificación
+      const funcionVerificacion = tipoVerificacion === ui.Button.YES ? 'verificarCambios' : 'verificarCambiosHorarioLaboral';
+      ScriptApp.newTrigger(funcionVerificacion).timeBased().everyMinutes(minutos).create();
+
+      const horaFmt = `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}`;
+      showAlert(
+        '✅ Configuración Completa',
+        `Sistema configurado correctamente\n\n` +
+        `📅 Reporte diario: ${horaFmt} (America/Bogota)\n` +
+        `🔄 Primera ejecución: ${formatDate(fechaBase, "dd/MM/yyyy HH:mm")}\n` +
+        `⏱️ Verificación cada: ${minutos} minuto${minutos > 1 ? 's' : ''}\n` +
+        `🕐 Horario: ${tipoVerificacion === ui.Button.YES ? '24 horas' : '8 AM - 6 PM'}\n\n` +
+        `Nota: Los triggers pueden ejecutarse hasta 15 minutos antes o después de la hora configurada`
+      );
+
+      registrarError("Configuración", "Triggers configurados exitosamente",
+        `Reporte diario ${horaFmt}, verificación cada ${minutos} min, modo: ${tipoVerificacion === ui.Button.YES ? '24h' : 'Laboral'}`);
+
+    } else {
+      // Prueba única
+      const respMin = ui.prompt('🧪 Configuración de Prueba','Ingresa en cuántos minutos ejecutar el reporte (1-59):', ui.ButtonSet.OK_CANCEL);
+      if (respMin.getSelectedButton() !== ui.Button.OK) return;
+
+      const minPrueba = parseInt(respMin.getResponseText().trim(), 10);
+      if (isNaN(minPrueba) || minPrueba < 1 || minPrueba > 59) { showAlert('❌ Error', 'Minutos inválidos'); return; }
+
+      const ahora = new Date();
+      const exec = new Date(ahora.getTime() + minPrueba * 60000);
+
+      ScriptApp.newTrigger('reporteDiarioConManejo').timeBased().at(exec).create();
+
+      // Trigger de verificación
+      const funcionVerificacion = tipoVerificacion === ui.Button.YES ? 'verificarCambios' : 'verificarCambiosHorarioLaboral';
+      ScriptApp.newTrigger(funcionVerificacion).timeBased().everyMinutes(minutos).create();
+
+      showAlert(
+        '✅ Configuración de Prueba',
+        `El reporte se ejecutará en ${minPrueba} minutos\n` +
+        `Hora aproximada: ${formatDate(exec, "HH:mm")} (${Session.getScriptTimeZone()})\n` +
+        `⏱️ Verificación cada: ${minutos} minuto${minutos > 1 ? 's' : ''}\n` +
+        `🕐 Horario: ${tipoVerificacion === ui.Button.YES ? '24 horas' : '8 AM - 6 PM'}\n\n` +
+        `NOTA: Este es un trigger único para prueba`
+      );
+
+      registrarError("Configuración", "Triggers configurados exitosamente",
+        `Prueba única en ${minPrueba} min, verificación cada ${minutos} min, modo: ${tipoVerificacion === ui.Button.YES ? '24h' : 'Laboral'}`);
+    }
+
+  } catch (e) {
+    registrarError("Configuración Trigger", "Error", e.message);
+    showAlert('❌ Error', 'Error al configurar: ' + e.message);
+  }
+}
+
+// ================== UTILIDADES COMPLEMENTARIAS (Prueba rápida y ver/stop triggers) ==================
+function configurarPruebaRapida(){
+  const ui=SpreadsheetApp.getUi();
+  const min=parseInt(ui.prompt('🧪 Prueba Rápida','¿En cuántos minutos ejecutar el reporte? (1-30)', ui.ButtonSet.OK_CANCEL).getResponseText());
+  if (isNaN(min)||min<1||min>30){ showAlert('❌ Error','Ingresa un número entre 1 y 30'); return; }
+  try{
+    ScriptApp.getProjectTriggers().filter(t=>t.getHandlerFunction()==='reporteDiarioConManejo').forEach(t=>ScriptApp.deleteTrigger(t));
+    const ahora=new Date(), exec=new Date(ahora.getTime()+min*60000);
+    ScriptApp.newTrigger('reporteDiarioConManejo').timeBased().at(exec).create();
+    registrarError("Prueba Rápida","Trigger configurado", `Ejecutará en ${min} min a las ${formatDate(exec,"HH:mm:ss")}`);
+    showAlert('✅ Prueba Configurada', `Se ejecutará en ${min} min\n⏰ Ahora: ${formatDate(ahora,"HH:mm:ss")}\n▶️ A las: ${formatDate(exec,"HH:mm:ss")}\n🌎 Zona: ${Session.getScriptTimeZone()}`);
+  }catch(e){ registrarError("Prueba Rápida","Error", e.message); showAlert('❌ Error','Error al configurar: '+e.message); }
+}
+function verTriggersActivos(){
+  const triggers=ScriptApp.getProjectTriggers();
+  const zona=Session.getScriptTimeZone(), hora=formatDate(new Date(),"HH:mm:ss"), zonaHoja=SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
+  let info=`🌎 INFORMACIÓN DE ZONA HORARIA:\nZona del Script: ${zona}\nZona de la Hoja: ${zonaHoja}\nHora actual: ${hora}\n\n📅 TRIGGERS CONFIGURADOS:\n`;
+  if (triggers.length===0) info+='No hay triggers configurados';
+  else{
+    triggers.forEach((t,i)=>{ const h=t.getHandlerFunction(); let det='';
+      try{ if (t.getEventType()===ScriptApp.EventType.CLOCK){ det=' (Trigger de tiempo)'; if (h==='reporteDiarioConManejo') det+=' - 📅 REPORTE DIARIO'; else if (h==='verificarCambios') det+=' - ⏱️ VERIFICACIÓN AUTOMÁTICA (24h)'; else if (h==='verificarCambiosHorarioLaboral') det+=' - ⏱️ VERIFICACIÓN AUTOMÁTICA (8AM-6PM)'; } }catch(e){}
+      info+=`${i+1}. ${h}${det}\n`;
+    });
+    info+=`\n💡 Las verificaciones automáticas se ejecutan según el intervalo configurado.`;
+  }
+  showAlert('📅 Triggers y Zona Horaria', info);
+}
+function detenerTriggers(){
+  const ts=ScriptApp.getProjectTriggers(); ts.forEach(t=>ScriptApp.deleteTrigger(t));
+  registrarError("Sistema","Triggers detenidos manualmente", `Total: ${ts.length}`);
+  showAlert('🛑 Triggers Detenidos', `Se eliminaron ${ts.length} triggers`);
+}
